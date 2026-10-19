@@ -48,6 +48,21 @@ export class Witness {
     await this.call('POST', `/cards/${id}/comments`, { body, actor: this.actor });
   }
 
+  /**
+   * The record of where the code reached (GN-602): per environment, latest wins, no
+   * version minted. Null when this witness predates the route (a 404 that is not the
+   * card's): the comment still landed, and the summary says the record did not.
+   */
+  async recordDeploy(id: string, deploy: { environment: string; sha: string; url?: string; run?: string }): Promise<boolean> {
+    try {
+      await this.call('POST', `/cards/${id}/deploys`, { ...deploy, actor: this.actor });
+      return true;
+    } catch (e) {
+      if (e instanceof WitnessError && e.status === 404) return false;
+      throw e;
+    }
+  }
+
   /** One field, on the version read; the server answers 409 if the card moved meanwhile. */
   async setStatus(id: string, version: number, status: string): Promise<void> {
     await this.call('PATCH', `/cards/${id}`, { status, actor: this.actor }, { 'If-Match': String(version) });

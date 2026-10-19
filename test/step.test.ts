@@ -116,6 +116,12 @@ describe('the step against a real project', () => {
     const after = await read(link, blocked.id);
     expect(after.card.status).toBe('verify');
     expect(after.comments).toHaveLength(1);
+    // The record beside the comment: what the list's mark reads.
+    expect(after.card.deployed.staging).toMatchObject({
+      sha: run.sha,
+      url: 'https://staging.acme.test',
+      run: 'https://github.com/acme/shop/actions/runs/99001',
+    });
     expect(after.comments[0].body).toBe(
       'Deployed to **staging** at [`3f9c2a1`](https://github.com/acme/shop/commit/3f9c2a1deadbeef0000000000000000000000000) · [run 4183](https://github.com/acme/shop/actions/runs/99001) — https://staging.acme.test',
     );

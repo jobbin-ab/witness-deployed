@@ -155,6 +155,16 @@ class Witness {
   async comment(id, body) {
     await this.call("POST", `/cards/${id}/comments`, { body, actor: this.actor });
   }
+  async recordDeploy(id, deploy) {
+    try {
+      await this.call("POST", `/cards/${id}/deploys`, { ...deploy, actor: this.actor });
+      return true;
+    } catch (e) {
+      if (e instanceof WitnessError && e.status === 404)
+        return false;
+      throw e;
+    }
+  }
   async setStatus(id, version, status) {
     await this.call("PATCH", `/cards/${id}`, { status, actor: this.actor }, { "If-Match": String(version) });
   }
@@ -196,6 +206,7 @@ async function step(inputs, run, clients) {
     warnings.push("`status: done` was ignored — done needs the name of a person who vouches, and a pipeline has none to give. The cards were commented on.");
   }
   const body = commentBody(run, inputs);
+  let noRecord = false;
   const reached = [];
   const unknown = [];
   for (const id of ids) {
@@ -211,6 +222,20 @@ async function step(inputs, run, clients) {
       row.note = `comment refused: ${describe(e)}`;
       reached.push(row);
       continue;
+    }
+    try {
+      const recorded = await clients.witness.recordDeploy(id, {
+        environment: inputs.environment,
+        sha: run.sha,
+        url: inputs.url,
+        run: `${run.serverUrl}/${run.repository}/actions/runs/${run.runId}`
+      });
+      if (!recorded && !noRecord) {
+        noRecord = true;
+        warnings.push("This witness keeps no deploy record yet (the comment landed; the list will not show the mark). Update witness to carry it.");
+      }
+    } catch (e) {
+      row.note = `record refused: ${describe(e)}`;
     }
     const target = moveTo(card, inputs.status);
     if (target) {

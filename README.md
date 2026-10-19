@@ -55,8 +55,10 @@ card stays where it was.
    the first run, or when the token may not read runs, the head commit alone is read and
    the summary says so. `permissions: actions: read` on the job lets it read runs; or pass
    `since`.
-3. For each cited card: one comment, and, when `status` is set and the card is in Blocked,
-   one status change on the version it read. Every write carries the deploy's own name:
+3. For each cited card: one comment; the deploy record the card keeps per environment
+   (what the list's mark and its filter read, and what an agent reads instead of the
+   comment); and, when `status` is set and the card is in Blocked, one status change on
+   the version it read. Every write carries the deploy's own name:
    `{"kind": "agent", "name": "<owner>/<repo> deploy", "via": "GitHub Actions"}`.
 4. Writes the step summary: the cards reached with the status they had and have, and the
    ids that named no card. The link appears nowhere in the summary or the log.

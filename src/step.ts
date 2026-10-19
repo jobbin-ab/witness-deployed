@@ -25,6 +25,7 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
   }
 
   const body = commentBody(run, inputs);
+  let noRecord = false;
   const reached: Reached[] = [];
   const unknown: string[] = [];
   for (const id of ids) {
@@ -40,6 +41,21 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
       row.note = `comment refused: ${describe(e)}`;
       reached.push(row);
       continue;
+    }
+    // The record the list and an agent can trust, beside the comment a person reads.
+    try {
+      const recorded = await clients.witness.recordDeploy(id, {
+        environment: inputs.environment,
+        sha: run.sha,
+        url: inputs.url,
+        run: `${run.serverUrl}/${run.repository}/actions/runs/${run.runId}`,
+      });
+      if (!recorded && !noRecord) {
+        noRecord = true;
+        warnings.push('This witness keeps no deploy record yet (the comment landed; the list will not show the mark). Update witness to carry it.');
+      }
+    } catch (e) {
+      row.note = `record refused: ${describe(e)}`;
     }
     const target = moveTo(card, inputs.status);
     if (target) {
