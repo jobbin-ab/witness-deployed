@@ -1,5 +1,5 @@
 /**
- * The share-link API, the four calls the step makes. The link is the credential and goes
+ * The share-link API, the five calls the step makes. The link is the credential and goes
  * in the path, as the contract says; every write carries the deploy's actor.
  */
 import type { Card } from './lib.ts';
