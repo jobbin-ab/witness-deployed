@@ -1,0 +1,41 @@
+name: witness deployed
+description: >-
+  After a deploy, tells the witness cards cited in the deployed commits where they shipped,
+  and moves the ones that were waiting on it, as the project's rules say.
+author: jobbin-ab
+branding:
+  icon: check-circle
+  color: green
+inputs:
+  link:
+    description: >-
+      A share link to the witness project (Share on the project page). An edit link lets the
+      step move cards; a view link lets it comment only. Keep it in a repository secret.
+    required: true
+  environment:
+    description: Where this deploy landed, as your team names it — staging, production, preview.
+    required: true
+  url:
+    description: The address of that environment, if it has one. Goes in the comment so a person can open it.
+    required: false
+  status:
+    description: >-
+      A status to move cards to — only cards now in Blocked, the ones waiting on a deploy.
+      Leave it out and the step only comments. A status key from the project's document, such as
+      verify. Never done: a pipeline has no person to name.
+    required: false
+  since:
+    description: >-
+      The commit the previous deploy to this environment shipped. Found from the previous
+      successful run of this workflow when left out; pass it to take the range from somewhere else.
+    required: false
+  token:
+    description: The GitHub token used to read this repository's commits and workflow runs.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  cards:
+    description: JSON — the cards the deploy reached, each with its id, its title, the status it had and the one it has now.
+runs:
+  using: node20
+  main: dist/main.cjs

@@ -1,0 +1,23 @@
+name: Test and typecheck
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      # The unit tests and the entry's own cases. The live tests against a witness worker
+      # (test/step.test.ts, the third case in test/main.test.ts) need WITNESS_EDIT_LINK and
+      # WITNESS_VIEW_LINK and are skipped here; the README says how to run them.
+      - run: bun test
+      # dist/ is what GitHub runs. It is committed, and a commit that changes src/ without
+      # rebuilding it ships yesterday's step.
+      - run: bun run build
+      - run: git diff --exit-code -- dist
