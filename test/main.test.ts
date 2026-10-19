@@ -50,12 +50,20 @@ async function runEntry(inputs: Record<string, string>, message: string): Promis
 }
 
 describe('the entry GitHub runs', () => {
-  test('a link that reaches no project: exit 0, one warning, nothing else', async () => {
-    const link = 'http://localhost:8787/r/not-a-link-at-all';
+  test('a link that reaches nothing: exit 0, one warning, nothing else', async () => {
+    const link = 'http://127.0.0.1:9/r/nothing-listens-here';
     const r = await runEntry({ link, environment: 'staging' }, 'x');
     expect(r.code).toBe(0);
     expect(r.out).toContain(`::add-mask::${link}`);
-    expect(r.out).toMatch(/::warning::witness-deployed: .*(Unknown project link|404).*the deploy is unaffected/);
+    expect(r.out).toMatch(/::warning::witness-deployed: .*the deploy is unaffected/);
+    expect(r.summary).toBe('');
+  });
+
+  live('a link the worker does not know: exit 0, the server\'s own reason in the warning', async () => {
+    const link = `${edit!.split('/r/')[0]}/r/not-a-link-at-all`;
+    const r = await runEntry({ link, environment: 'staging' }, 'x');
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/::warning::witness-deployed: Unknown project link.*the deploy is unaffected/);
     expect(r.summary).toBe('');
   });
 

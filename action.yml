@@ -37,5 +37,5 @@ outputs:
   cards:
     description: JSON — the cards the deploy reached, each with its id, its title, the status it had and the one it has now.
 runs:
-  using: node20
+  using: node24
   main: dist/main.cjs
