@@ -24,6 +24,12 @@ inputs:
       Leave it out and the step only comments. A status key from the project's document, such as
       verify. Never done: a pipeline has no person to name.
     required: false
+  text:
+    description: >-
+      Text to scan for card ids beside the commits — a release's notes, say:
+      `${{ github.event.release.body }}` on a workflow that runs on a release. The same id
+      rule applies to it; nothing else about it is read.
+    required: false
   since:
     description: >-
       The commit the previous deploy to this environment shipped. Found from the previous

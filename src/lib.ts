@@ -10,6 +10,8 @@ export type Inputs = {
   url?: string;
   status?: string;
   since?: string;
+  /** Text to scan beside the commits — a release's notes. */
+  text?: string;
 };
 
 /** What the run knows about itself — GitHub's own context, read from the environment. */
@@ -46,6 +48,16 @@ export function citedIds(commits: readonly Commit[], prefixes: readonly string[]
     for (const m of c.message.matchAll(pattern)) seen.add(m[0]);
   }
   return [...seen];
+}
+
+/**
+ * The ids a deploy cites: its commits, and whatever text the workflow handed over beside
+ * them — a release's notes, when the cards are named there rather than in commits. The
+ * same rule for both; the text is read as one more message, last.
+ */
+export function idsOf(commits: readonly Commit[], text: string | undefined, prefixes: readonly string[]): string[] {
+  const extra = text?.trim() ? [{ sha: '', message: text }] : [];
+  return citedIds([...commits, ...extra], prefixes);
 }
 
 /** The commit's first line, for the summary. */

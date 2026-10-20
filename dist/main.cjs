@@ -74,6 +74,10 @@ function citedIds(commits, prefixes) {
   }
   return [...seen];
 }
+function idsOf(commits, text, prefixes) {
+  const extra = text?.trim() ? [{ sha: "", message: text }] : [];
+  return citedIds([...commits, ...extra], prefixes);
+}
 function subject(message) {
   return message.split(`
 `, 1)[0]?.trim() ?? "";
@@ -200,8 +204,9 @@ function makeWitness(inputs, run, fetchImpl) {
 async function step(inputs, run, clients) {
   const warnings = [];
   const prefixes = await clients.witness.prefixes();
-  const { commits, range } = await deployedCommits(inputs, clients.github, warnings);
-  const ids = citedIds(commits, prefixes);
+  const { commits, range: commitRange } = await deployedCommits(inputs, clients.github, warnings);
+  const ids = idsOf(commits, inputs.text, prefixes);
+  const range = inputs.text?.trim() ? `${commitRange}, and the text given` : commitRange;
   if (inputs.status === "done") {
     warnings.push("`status: done` was ignored — done needs the name of a person who vouches, and a pipeline has none to give. The cards were commented on.");
   }
@@ -333,7 +338,7 @@ async function main() {
   const token = input("token") ?? "";
   if (token)
     mask(token);
-  const inputs = { link, environment, url: input("url"), status: input("status"), since: input("since") };
+  const inputs = { link, environment, url: input("url"), status: input("status"), since: input("since"), text: input("text") };
   const run = {
     repository: env("GITHUB_REPOSITORY"),
     sha: env("GITHUB_SHA"),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { citedIds, commentBody, idPattern, moveTo, summaryMarkdown, type Run } from '../src/lib.ts';
+import { citedIds, commentBody, idPattern, idsOf, moveTo, summaryMarkdown, type Run } from '../src/lib.ts';
 
 const run: Run = {
   repository: 'acme/shop',
@@ -25,6 +25,14 @@ describe('which ids a deploy cites', () => {
 
   test('a number too short is not a card', () => {
     expect(citedIds([{ sha: 'a', message: 'AL-4 is not an id; AL-04 is' }], ['AL'])).toEqual(['AL-04']);
+  });
+
+  test("a release's notes count beside the commits, by the same rule", () => {
+    const commits = [{ sha: 'a', message: 'Bump version' }];
+    const notes = '## 4.2\n- Retry on 502 (VX-13)\n- Jira: PROJ-9\n- AL-04 again';
+    expect(idsOf(commits, notes, ['AL', 'VX'])).toEqual(['VX-13', 'AL-04']);
+    expect(idsOf(commits, undefined, ['AL', 'VX'])).toEqual([]);
+    expect(idsOf(commits, '   ', ['AL', 'VX'])).toEqual([]);
   });
 
   test('a project with no usable prefix cites nothing', () => {

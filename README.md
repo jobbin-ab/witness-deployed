@@ -38,6 +38,7 @@ or none.
 | `url` | no | The address of that environment. Goes in the comment, so a person verifying can open it from the card. |
 | `status` | no | A status to move cards to. Only cards now in **Blocked** move, the ones waiting on a deploy; a done card cited by a hotfix stays done. A status key from the project's document, usually `verify`. Never `done`: done needs the name of a person who vouches, and a pipeline has none to give. |
 | `since` | no | The commit the previous deploy shipped. Left out, the step takes the previous successful run of this workflow on this branch. |
+| `text` | no | Text to scan for card ids beside the commits, by the same rule — a release's notes, when the cards are named there: `${{ github.event.release.body }}` on a workflow that runs on a release. |
 | `token` | no | Defaults to `github.token`. |
 
 The status keys: `triage`, `investigating`, `decision`, `ready`, `blocked`, `verify`,
@@ -49,7 +50,7 @@ card stays where it was.
 
 1. Reads the project's areas from the link. Their prefixes are the only ids a commit can
    cite here: `AL-04` counts when `AL` is one of your areas; a Jira key never does, and is
-   never mentioned.
+   never mentioned. Text passed in `text` is read by the same rule, beside the commits.
 2. Finds the previous successful run of this workflow on this branch, and the commits
    between it and this one, from the GitHub API. No checkout, no history depth needed. On
    the first run, or when the token may not read runs, the head commit alone is read and

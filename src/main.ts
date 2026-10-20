@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   const token = input('token') ?? '';
   if (token) mask(token);
 
-  const inputs: Inputs = { link, environment, url: input('url'), status: input('status'), since: input('since') };
+  const inputs: Inputs = { link, environment, url: input('url'), status: input('status'), since: input('since'), text: input('text') };
   const run: Run = {
     repository: env('GITHUB_REPOSITORY'),
     sha: env('GITHUB_SHA'),

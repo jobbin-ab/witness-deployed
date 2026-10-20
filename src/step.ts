@@ -3,7 +3,7 @@
  * project and a stand-in GitHub. It never throws for a card: what a card refuses is a line
  * in the summary, and the next card is still written.
  */
-import { actor as actorFor, citedIds, commentBody, moveTo, subject, type Commit, type Inputs, type Outcome, type Reached, type Run } from './lib.ts';
+import { actor as actorFor, commentBody, idsOf, moveTo, subject, type Commit, type Inputs, type Outcome, type Reached, type Run } from './lib.ts';
 import type { GitHub } from './github.ts';
 import { Witness, WitnessError, type Fetch } from './witness.ts';
 
@@ -17,8 +17,9 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
   const warnings: string[] = [];
   const prefixes = await clients.witness.prefixes();
 
-  const { commits, range } = await deployedCommits(inputs, clients.github, warnings);
-  const ids = citedIds(commits, prefixes);
+  const { commits, range: commitRange } = await deployedCommits(inputs, clients.github, warnings);
+  const ids = idsOf(commits, inputs.text, prefixes);
+  const range = inputs.text?.trim() ? `${commitRange}, and the text given` : commitRange;
 
   if (inputs.status === 'done') {
     warnings.push('`status: done` was ignored — done needs the name of a person who vouches, and a pipeline has none to give. The cards were commented on.');
