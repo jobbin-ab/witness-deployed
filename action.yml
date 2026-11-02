@@ -26,9 +26,9 @@ inputs:
     required: false
   text:
     description: >-
-      Text to scan for card ids beside the commits — a release's notes, say:
-      `${{ github.event.release.body }}` on a workflow that runs on a release. The same id
-      rule applies to it; nothing else about it is read.
+      Text to scan for card ids beside the commits — a release's notes, say, passed from
+      github.event.release.body on a workflow that runs on a release. The same id rule
+      applies to it; nothing else about it is read.
     required: false
   since:
     description: >-
