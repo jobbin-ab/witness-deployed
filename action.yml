@@ -1,7 +1,8 @@
 name: witness deployed
 description: >-
   After a deploy, tells the witness cards cited in the deployed commits where they shipped,
-  and moves the ones that were waiting on it, as the project's rules say.
+  moves the ones that were waiting on it, as the project's rules say, and records the
+  deploy on the project so the next one knows where to compare from.
 author: jobbin-ab
 branding:
   icon: check-circle
@@ -32,11 +33,23 @@ inputs:
     required: false
   since:
     description: >-
-      The commit the previous deploy to this environment shipped. Found from the previous
-      successful run of this workflow when left out; pass it to take the range from somewhere else.
+      Where to compare from instead of the previous deploy the project recorded — a commit, a
+      tag or any ref GitHub can compare from. Left out, the step takes the project's record,
+      and on the first deploy to an environment reads the text alone, or the head commit.
+    required: false
+  sha:
+    description: >-
+      The commit that shipped, when it is not the one the workflow runs on — a build promoted
+      from an earlier run, a chosen ref, a rollback. Defaults to the workflow's own commit.
+    required: false
+  release:
+    description: >-
+      The name your team calls this deploy by, when it has one — a release tag, a build number:
+      github.event.release.tag_name on a workflow that runs on a release. Shown on the card
+      beside the commit.
     required: false
   token:
-    description: The GitHub token used to read this repository's commits and workflow runs.
+    description: The GitHub token used to read this repository's commits.
     required: false
     default: ${{ github.token }}
 outputs:

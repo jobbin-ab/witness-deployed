@@ -49,10 +49,20 @@ async function main(): Promise<void> {
   const token = input('token') ?? '';
   if (token) mask(token);
 
-  const inputs: Inputs = { link, environment, url: input('url'), status: input('status'), since: input('since'), text: input('text') };
+  const inputs: Inputs = {
+    link,
+    environment,
+    url: input('url'),
+    status: input('status'),
+    since: input('since'),
+    text: input('text'),
+    release: input('release'),
+  };
   const run: Run = {
     repository: env('GITHUB_REPOSITORY'),
-    sha: env('GITHUB_SHA'),
+    // The commit that shipped: the workflow's own unless the step was told otherwise — a
+    // build promoted from an earlier run, a chosen ref, a rollback.
+    sha: input('sha') ?? env('GITHUB_SHA'),
     runId: env('GITHUB_RUN_ID'),
     runNumber: env('GITHUB_RUN_NUMBER'),
     serverUrl: env('GITHUB_SERVER_URL') || 'https://github.com',

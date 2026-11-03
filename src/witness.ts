@@ -2,7 +2,7 @@
  * The share-link API, the five calls the step makes. The link is the credential and goes
  * in the path, as the contract says; every write carries the deploy's actor.
  */
-import type { Card } from './lib.ts';
+import type { Card, ProjectDeploy } from './lib.ts';
 
 /** The shape of fetch the clients take, so a test can hand in a stand-in without bun's extras. */
 export type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -53,9 +53,36 @@ export class Witness {
    * version minted. Null when this witness predates the route (a 404 that is not the
    * card's): the comment still landed, and the summary says the record did not.
    */
-  async recordDeploy(id: string, deploy: { environment: string; sha: string; url?: string; run?: string }): Promise<boolean> {
+  async recordDeploy(id: string, deploy: { environment: string; sha: string; release?: string; url?: string; run?: string }): Promise<boolean> {
     try {
       await this.call('POST', `/cards/${id}/deploys`, { ...deploy, actor: this.actor });
+      return true;
+    } catch (e) {
+      if (e instanceof WitnessError && e.status === 404) return false;
+      throw e;
+    }
+  }
+
+  /**
+   * The project's own record (witness keeps it since 2026-11-03): the previous deploy to this environment from this
+   * repository, which is where this deploy's range begins. Null on the first deploy there;
+   * 'unsupported' when this witness predates the route, and the caller finds the range the
+   * old way.
+   */
+  async previousDeploy(repository: string, environment: string): Promise<ProjectDeploy | null | 'unsupported'> {
+    try {
+      const data = await this.call<{ deploys: ProjectDeploy[] }>('GET', '/deploys.json');
+      return data.deploys.find((d) => d.repository === repository && d.environment === environment) ?? null;
+    } catch (e) {
+      if (e instanceof WitnessError && e.status === 404) return 'unsupported';
+      throw e;
+    }
+  }
+
+  /** This deploy, into the project's record, after the cards were told. False when the witness predates the route. */
+  async recordProjectDeploy(deploy: Omit<ProjectDeploy, 'at' | 'release' | 'url' | 'run'> & Partial<Pick<ProjectDeploy, 'release' | 'url' | 'run'>>): Promise<boolean> {
+    try {
+      await this.call('POST', '/deploys', { ...deploy, actor: this.actor });
       return true;
     } catch (e) {
       if (e instanceof WitnessError && e.status === 404) return false;
