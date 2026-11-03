@@ -2,7 +2,8 @@
 
 A deploy step that tells the [witness](https://witness.nu) cards its commits cite that they
 shipped. After a successful deploy it finds the card ids in the commits since the previous
-deploy to that environment, comments on each card where and when it shipped, and, if your
+deploy to that environment, and in the `Ships` lines of the pull requests they came from,
+comments on each card where and when it shipped, and, if your
 workflow says so, moves the cards that were waiting on a deploy. The project keeps the
 record of each deploy, so the next run knows where to compare from however your deploys
 are triggered.
@@ -35,6 +36,34 @@ On a workflow that runs on a release, the notes name the cards and the tag names
     release: ${{ github.event.release.tag_name }}
 ```
 
+## Naming the cards in a pull request
+
+A squash or merge commit carries the pull request's title, not its description, so cards
+named only in the description would never reach the commits. The step reads the
+description too, but only a line that declares what the pull request ships:
+
+```markdown
+Ships GN-660, GN-661.
+
+Builds on GN-606; the export is left for its own card.
+```
+
+Here GN-660 and GN-661 are marked as shipped; GN-606 is not, nor is any id elsewhere in
+the description. The line starts with `Ships`, in any case, after any indentation and
+one list marker (`- ships: GN-660` counts), and every id on the rest of that line counts.
+`Shipped GN-660`, or `ships` in the middle of a sentence, does not. Commit messages are
+read as before: any id in them counts.
+
+On a private repository the job's token needs `pull-requests: read` to see the pull
+requests; on a public one it can read them already. Without it the step warns and reads
+the commits alone.
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: read
+```
+
 ## What a deploy means is your project's rule
 
 Witness does not know what a deploy to an environment means to your team. In one project a
@@ -56,7 +85,7 @@ or none.
 | `sha` | no | The commit that shipped, when it is not the one the workflow runs on — a build promoted from an earlier run, a chosen ref, a rollback. |
 | `release` | no | The name your team calls this deploy by — a release tag, a build number: `${{ github.event.release.tag_name }}` on a workflow that runs on a release. Shown on the card beside the commit. |
 | `text` | no | Text to scan for card ids beside the commits, by the same rule — a release's notes, when the cards are named there: `${{ github.event.release.body }}` on a workflow that runs on a release. |
-| `token` | no | Defaults to `github.token`. |
+| `token` | no | Defaults to `github.token`. Reads the commits and the pull requests they came from; on a private repository the job needs `pull-requests: read` for the second. |
 
 The status keys: `triage`, `investigating`, `decision`, `ready`, `blocked`, `verify`,
 `byDesign`, `parked`, `cancelled`. A key the project does not have, or one that needs a
@@ -78,18 +107,21 @@ card stays where it was.
    branch, which `permissions: actions: read` lets it read, so a team that deploys on pushes
    keeps its range on that run. With nothing to compare from at all, the text alone is read
    when `text` is given, otherwise the head commit, and the summary says so.
-3. For each cited card: one comment; the deploy record the card keeps per environment
+3. Asks GitHub which pull requests those commits came from, reads each once, and adds the
+   ids on its `Ships` lines to the commits' own; the summary counts the pull requests read.
+   A token that cannot read them costs those ids and a warning, never the commits'.
+4. For each cited card: one comment; the deploy record the card keeps per environment
    (what the list's mark and its filter read, and what an agent reads instead of the
    comment); and, when `status` is set and the card is in Blocked, one status change on
    the version it read. Every write carries the deploy's own name:
    `{"kind": "agent", "name": "<owner>/<repo> deploy", "via": "GitHub Actions"}`.
-4. Records the deploy on the project, last, so a step that died halfway is covered by the
+5. Records the deploy on the project, last, so a step that died halfway is covered by the
    next run rather than lost — and whether or not a card was cited.
-5. Writes the step summary: the cards reached with the status they had and have, and the
+6. Writes the step summary: the cards reached with the status they had and have, and the
    ids that named no card. The link appears nowhere in the summary or the log.
 
 It never fails the deploy. A project it cannot reach, a card it cannot change, a token
-that cannot read runs: each is a warning on the step, and the job stays green.
+that cannot read runs or pull requests: each is a warning on the step, and the job stays green.
 
 ## Any other CI
 

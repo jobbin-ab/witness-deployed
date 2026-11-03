@@ -2,18 +2,20 @@
  * The whole step against a real witness project — a local worker, provisioned with the
  * admin CLI, its links in WITNESS_EDIT_LINK and WITNESS_VIEW_LINK — with GitHub's API stood
  * in for. GitHub is the one boundary this suite cannot cross: a real run exists only
- * inside Actions, so the two answers the step reads (the previous successful run, the
- * compare) are served by a stand-in that returns the documented shapes. Everything on the
+ * inside Actions, so the answers the step reads (the previous successful run, the compare,
+ * the pull requests a commit came from) are served by a stand-in that returns the
+ * documented shapes. Everything on the
  * witness side is the real server: the ids it assigns, the writes it accepts, the ones it
  * refuses.
  *
- * Skipped, loudly, when no link is set.
+ * Skipped, loudly, when no link is set — all but the reading of pull requests, which needs
+ * no project.
  */
 import { describe, expect, test } from 'bun:test';
 import { GitHub } from '../src/github.ts';
 import type { Fetch } from '../src/witness.ts';
 import { actor, type Run } from '../src/lib.ts';
-import { makeWitness, step } from '../src/step.ts';
+import { makeWitness, shippedByPullRequests, step } from '../src/step.ts';
 
 const edit = process.env.WITNESS_EDIT_LINK;
 const view = process.env.WITNESS_VIEW_LINK;
@@ -33,8 +35,11 @@ const previousSha = '1234567aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
  * GitHub's answers, in the shapes the API documents. `compared` is every base the step
  * asked to compare from, which is how a test sees where the range began.
  */
-function githubStandIn(messages: string[], opts: { runs?: 'forbidden' | 'none'; head?: string } = {}): GitHub & { compared: string[] } {
+type Pulls = Record<string, { number: number; body: string | null }[]> | 403 | 404 | 500;
+
+function githubStandIn(messages: string[], opts: { runs?: 'forbidden' | 'none'; head?: string; pulls?: Pulls } = {}): GitHub & { compared: string[]; pullsAsked: string[] } {
   const compared: string[] = [];
+  const pullsAsked: string[] = [];
   const sha = opts.head ?? run.sha;
   const fetchImpl: Fetch = async (input) => {
     const url = String(input);
@@ -42,6 +47,12 @@ function githubStandIn(messages: string[], opts: { runs?: 'forbidden' | 'none'; 
       if (opts.runs === 'forbidden') return new Response('{"message":"Resource not accessible by integration"}', { status: 403 });
       const runs = opts.runs === 'none' ? [] : [{ head_sha: sha, run_number: 4183 }, { head_sha: previousSha, run_number: 4182 }];
       return Response.json({ workflow_runs: runs });
+    }
+    const pulls = /\/commits\/([^/]+)\/pulls/.exec(url);
+    if (pulls) {
+      pullsAsked.push(pulls[1]!);
+      if (typeof opts.pulls === 'number') return Response.json({ message: 'Not Found' }, { status: opts.pulls });
+      return Response.json(opts.pulls?.[pulls[1]!] ?? []);
     }
     const compare = /\/compare\/(.+?)\.\.\./.exec(url);
     if (compare) {
@@ -57,7 +68,7 @@ function githubStandIn(messages: string[], opts: { runs?: 'forbidden' | 'none'; 
     { ...run, sha, apiUrl: 'https://api.github.test', workflowRef: 'acme/shop/.github/workflows/deploy.yml@refs/heads/main', refName: 'main', token: 't' },
     fetchImpl,
   );
-  return Object.assign(github, { compared });
+  return Object.assign(github, { compared, pullsAsked });
 }
 
 /** An environment no earlier test has deployed to, so the project's record for it starts empty. */
@@ -113,6 +124,44 @@ async function seed(link: string) {
   const working = (await post(link, '/cards', { area: 'vx', title: 'Retry on 502', actor: writer })).card;
   return { blocked, done, working };
 }
+
+describe('the cards a pull request ships', () => {
+  const commits = [
+    { sha: 'c0', message: 'Fix discount total (#212)' },
+    { sha: 'c1', message: 'Tidy the footer (#212)' },
+    { sha: 'c2', message: 'Retry on 502 (#213)' },
+  ];
+  const pr212 = { number: 212, body: 'Builds on AL-02.\n\nShips AL-04, VX-13.\n\nAL-05 is left for its own card.' };
+  const pr213 = { number: 213, body: '- ships: AL-07' };
+
+  test('each pull request read once, only its Ships lines, joined across pull requests', async () => {
+    const warnings: string[] = [];
+    const github = githubStandIn([], { pulls: { c0: [pr212], c1: [pr212], c2: [pr213, { number: 214, body: null }] } });
+    const out = await shippedByPullRequests(commits, github, ['AL', 'VX'], warnings);
+    expect(out).toEqual({ ids: ['AL-04', 'VX-13', 'AL-07'], pulls: 3 });
+    expect(github.pullsAsked).toEqual(['c0', 'c1', 'c2']);
+    expect(warnings).toEqual([]);
+  });
+
+  for (const status of [403, 404] as const) {
+    test(`a token that may not read pull requests (${status}): one warning naming the permission, asked once`, async () => {
+      const warnings: string[] = [];
+      const github = githubStandIn([], { pulls: status });
+      const out = await shippedByPullRequests(commits, github, ['AL'], warnings);
+      expect(out).toEqual({ ids: [], pulls: 0 });
+      expect(github.pullsAsked).toEqual(['c0']);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('permissions: pull-requests: read');
+    });
+  }
+
+  test('a GitHub that fails to answer costs the pull requests, never the step', async () => {
+    const warnings: string[] = [];
+    const out = await shippedByPullRequests(commits, githubStandIn([], { pulls: 500 }), ['AL'], warnings);
+    expect(out).toEqual({ ids: [], pulls: 0 });
+    expect(warnings[0]).toContain('GitHub answered 500');
+  });
+});
 
 describe('the step against a real project', () => {
   live('comments on every cited card, moves only the blocked one, and reports the rest', async () => {
@@ -267,6 +316,31 @@ describe('the step against a real project', () => {
     const forbidden = await step(inputs, run, { witness, github: githubStandIn([`Fix (${blocked.id})`], { runs: 'forbidden' }) });
     expect(forbidden.warnings[0]).toContain('permissions: actions: read');
     expect(forbidden.reached.map((r) => r.id)).toEqual([blocked.id]);
+  });
+
+  live("the cards a pull request's Ships line names join the commits' own, and the range says so", async () => {
+    const link = edit!;
+    const { blocked, done, working } = await seed(link);
+    const environment = fresh();
+    await post(link, '/deploys', { repository: run.repository, environment, sha: previousSha, actor: actor(run) });
+    const inputs = { link, environment };
+    // Squash commits carry the pull request's title; the description names the cards.
+    const github = githubStandIn([`Fix discount total (${done.id}) (#212)`, 'Retry on 502 (#213)'], {
+      pulls: {
+        c0: [{ number: 212, body: `Ships ${blocked.id}, ${done.id}.\n\nBuilds on ${working.id}.` }],
+        c1: [{ number: 213, body: 'Ships AL-99' }],
+      },
+    });
+    const outcome = await step(inputs, run, { witness: makeWitness(inputs, run), github });
+    expect(outcome.range).toContain(`2 commit(s) since the previous deploy to ${environment}, \`1234567\`, and the Ships lines of 2 pull request(s)`);
+    expect(outcome.reached.map((r) => r.id)).toEqual([done.id, blocked.id]);
+    expect(outcome.unknown).toEqual(['AL-99']);
+    expect(outcome.warnings).toEqual([]);
+    expect((await read(link, working.id)).comments).toHaveLength(0);
+
+    const forbidden = await step(inputs, run, { witness: makeWitness(inputs, run), github: githubStandIn([`Fix (${done.id})`], { pulls: 404 }) });
+    expect(forbidden.reached.map((r) => r.id)).toEqual([done.id]);
+    expect(forbidden.warnings[0]).toContain('permissions: pull-requests: read');
   });
 
   live('a project the link cannot reach is one error, before any write', async () => {

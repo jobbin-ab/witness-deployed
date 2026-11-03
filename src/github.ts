@@ -1,9 +1,10 @@
 /**
- * The two things the step asks GitHub: which commit the previous successful run of this
- * workflow deployed, and which commits lie between that and this one. Both come from the
- * API, so the job needs no checkout and no history depth.
+ * What the step asks GitHub: which commit the previous successful run of this workflow
+ * deployed, which commits lie between that and this one, and which pull requests those
+ * commits came from. All of it comes from the API, so the job needs no checkout and no
+ * history depth.
  */
-import type { Commit, Run } from './lib.ts';
+import type { Commit, PullRequest, Run } from './lib.ts';
 import type { Fetch } from './witness.ts';
 
 export type GitHubContext = Run & {
@@ -43,6 +44,19 @@ export class GitHub {
     const res = await this.get<{ commits: { sha: string; commit: { message: string } }[] }>(url, [404, 422]);
     if (res === 'forbidden' || res === null) return null;
     return res.commits.map((c) => ({ sha: c.sha, message: c.commit.message }));
+  }
+
+  /**
+   * The pull requests a commit came from, with their descriptions: the merged one that
+   * brought it to the default branch, and on any other branch the open ones that carry it.
+   * `forbidden` when the token may not read pull requests — a private repository whose job
+   * lacks `pull-requests: read` answers 403 or, as often, 404.
+   */
+  async pullRequestsFor(sha: string): Promise<PullRequest[] | 'forbidden'> {
+    const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/commits/${sha}/pulls?per_page=100`;
+    const res = await this.get<{ number: number; body: string | null }[]>(url, [404]);
+    if (res === 'forbidden' || res === null) return 'forbidden';
+    return res.map((p) => ({ number: p.number, body: p.body ?? '' }));
   }
 
   /** This run's commit alone. */

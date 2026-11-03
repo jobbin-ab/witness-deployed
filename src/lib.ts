@@ -27,6 +27,9 @@ export type Run = {
 
 export type Commit = { sha: string; message: string };
 
+/** A pull request a deployed commit came from: its number, and its description. */
+export type PullRequest = { number: number; body: string };
+
 /** The card as the step reads it: enough to comment, to decide a move, and to send If-Match. */
 export type Card = { id: string; title: string; status: string; version: number };
 
@@ -63,6 +66,28 @@ export function citedIds(commits: readonly Commit[], prefixes: readonly string[]
 export function idsOf(commits: readonly Commit[], text: string | undefined, prefixes: readonly string[]): string[] {
   const extra = text?.trim() ? [{ sha: '', message: text }] : [];
   return citedIds([...commits, ...extra], prefixes);
+}
+
+/**
+ * A line of a pull request's description that declares what it ships: `Ships GN-660.` or
+ * `- ships: GN-660, GN-661`. The word opens the line — after any indentation and one list
+ * marker — in any case, and stands alone, so `Shipshape` and `Shipped` are not it.
+ */
+const shipsLine = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?ships\b(.*)$/i;
+
+/**
+ * The ids a pull request's description declares it ships: those on its `Ships` lines and
+ * nowhere else. A description mentions other cards in passing — "builds on GN-606", "left
+ * for its own card" — and a mention is not a shipment.
+ */
+export function declaredIds(bodies: readonly string[], prefixes: readonly string[]): string[] {
+  const lines = bodies.flatMap((body) =>
+    body.split(/\r?\n/).flatMap((line) => {
+      const m = shipsLine.exec(line);
+      return m ? [{ sha: '', message: m[1]! }] : [];
+    }),
+  );
+  return citedIds(lines, prefixes);
 }
 
 /** The commit's first line, for the summary. */

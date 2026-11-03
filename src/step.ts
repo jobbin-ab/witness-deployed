@@ -3,7 +3,7 @@
  * project and a stand-in GitHub. It never throws for a card: what a card refuses is a line
  * in the summary, and the next card is still written.
  */
-import { actor as actorFor, commentBody, idsOf, moveTo, runUrl, subject, type Commit, type Inputs, type Outcome, type Reached, type Run } from './lib.ts';
+import { actor as actorFor, commentBody, declaredIds, idsOf, moveTo, runUrl, subject, type Commit, type Inputs, type Outcome, type Reached, type Run } from './lib.ts';
 import type { GitHub } from './github.ts';
 import { Witness, WitnessError, type Fetch } from './witness.ts';
 
@@ -18,8 +18,11 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
   const prefixes = await clients.witness.prefixes();
 
   const found = await deployedCommits(inputs, run, clients, warnings);
-  const ids = idsOf(found.commits, inputs.text, prefixes);
-  const range = inputs.text?.trim() && !found.textOnly ? `${found.range}, and the text given` : found.range;
+  const declared = await shippedByPullRequests(found.commits, clients.github, prefixes, warnings);
+  const ids = [...new Set([...idsOf(found.commits, inputs.text, prefixes), ...declared.ids])];
+  let range = found.range;
+  if (declared.pulls > 0) range += `, and the Ships lines of ${declared.pulls} pull request(s)`;
+  if (inputs.text?.trim() && !found.textOnly) range += ', and the text given';
 
   if (inputs.status === 'done') {
     warnings.push('`status: done` was ignored — done needs the name of a person who vouches, and a pipeline has none to give. The cards were commented on.');
@@ -86,6 +89,37 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
     warnings.push(`The deploy was not recorded on the project (${describe(e)}); the next run will compare from the one before.`);
   }
   return { range, reached, unknown, warnings };
+}
+
+/**
+ * The ids the deployed commits' pull requests declare they ship. A squash or merge commit
+ * carries the pull request's title, not its description, so a team that names the cards in
+ * the description is read here, each pull request once. Only its `Ships` lines count; the
+ * commits themselves still count any id, as before. A token that may not read pull
+ * requests, or a GitHub that fails to answer, costs these ids and a warning — never the
+ * commits' own.
+ */
+export async function shippedByPullRequests(
+  commits: readonly Commit[],
+  github: GitHub,
+  prefixes: readonly string[],
+  warnings: string[],
+): Promise<{ ids: string[]; pulls: number }> {
+  const bodies = new Map<number, string>();
+  try {
+    for (const c of commits) {
+      const pulls = await github.pullRequestsFor(c.sha);
+      if (pulls === 'forbidden') {
+        warnings.push('The token may not read pull requests (`permissions: pull-requests: read`), so the cards their descriptions ship were not read; the commits were.');
+        return { ids: [], pulls: 0 };
+      }
+      for (const p of pulls) if (!bodies.has(p.number)) bodies.set(p.number, p.body);
+    }
+  } catch (e) {
+    warnings.push(`The pull requests could not be read (${describe(e)}), so the cards their descriptions ship were not read; the commits were.`);
+    return { ids: [], pulls: 0 };
+  }
+  return { ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size };
 }
 
 type Found = { commits: Commit[]; range: string; textOnly?: boolean };

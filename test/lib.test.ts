@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { citedIds, commentBody, idPattern, idsOf, moveTo, summaryMarkdown, type Run } from '../src/lib.ts';
+import { citedIds, commentBody, declaredIds, idPattern, idsOf, moveTo, summaryMarkdown, type Run } from '../src/lib.ts';
 
 const run: Run = {
   repository: 'acme/shop',
@@ -33,6 +33,27 @@ describe('which ids a deploy cites', () => {
     expect(idsOf(commits, notes, ['AL', 'VX'])).toEqual(['VX-13', 'AL-04']);
     expect(idsOf(commits, undefined, ['AL', 'VX'])).toEqual([]);
     expect(idsOf(commits, '   ', ['AL', 'VX'])).toEqual([]);
+  });
+
+  test("a pull request's description ships only what its Ships lines name", () => {
+    const body = [
+      'Builds on AL-02, which shipped last week.',
+      '',
+      'Ships AL-04.',
+      '',
+      'The rest is left for its own card, VX-20.',
+    ].join('\n');
+    expect(declaredIds([body], ['AL', 'VX'])).toEqual(['AL-04']);
+  });
+
+  test('a Ships line may be indented, listed, in any case, and name several', () => {
+    const body = '  - ships: AL-04, VX-13\r\n1. SHIPS AL-07 (and PROJ-9)\n* Ships AL-04 again';
+    expect(declaredIds([body], ['AL', 'VX'])).toEqual(['AL-04', 'VX-13', 'AL-07']);
+  });
+
+  test('only the word that opens the line: not Shipped, not Shipshape, not a Ships mid-sentence', () => {
+    const body = 'Shipped AL-04 before.\nShipshape AL-05\nThis ships AL-06 too.\n> Ships AL-07';
+    expect(declaredIds([body], ['AL'])).toEqual([]);
   });
 
   test('a project with no usable prefix cites nothing', () => {

@@ -27,6 +27,13 @@ class GitHub {
       return null;
     return res.commits.map((c) => ({ sha: c.sha, message: c.commit.message }));
   }
+  async pullRequestsFor(sha) {
+    const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/commits/${sha}/pulls?per_page=100`;
+    const res = await this.get(url, [404]);
+    if (res === "forbidden" || res === null)
+      return "forbidden";
+    return res.map((p) => ({ number: p.number, body: p.body ?? "" }));
+  }
   async headCommit() {
     const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/commits/${this.ctx.sha}`;
     const res = await this.get(url);
@@ -77,6 +84,14 @@ function citedIds(commits, prefixes) {
 function idsOf(commits, text, prefixes) {
   const extra = text?.trim() ? [{ sha: "", message: text }] : [];
   return citedIds([...commits, ...extra], prefixes);
+}
+var shipsLine = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?ships\b(.*)$/i;
+function declaredIds(bodies, prefixes) {
+  const lines = bodies.flatMap((body) => body.split(/\r?\n/).flatMap((line) => {
+    const m = shipsLine.exec(line);
+    return m ? [{ sha: "", message: m[1] }] : [];
+  }));
+  return citedIds(lines, prefixes);
 }
 function subject(message) {
   return message.split(`
@@ -229,8 +244,13 @@ async function step(inputs, run, clients) {
   const warnings = [];
   const prefixes = await clients.witness.prefixes();
   const found = await deployedCommits(inputs, run, clients, warnings);
-  const ids = idsOf(found.commits, inputs.text, prefixes);
-  const range = inputs.text?.trim() && !found.textOnly ? `${found.range}, and the text given` : found.range;
+  const declared = await shippedByPullRequests(found.commits, clients.github, prefixes, warnings);
+  const ids = [...new Set([...idsOf(found.commits, inputs.text, prefixes), ...declared.ids])];
+  let range = found.range;
+  if (declared.pulls > 0)
+    range += `, and the Ships lines of ${declared.pulls} pull request(s)`;
+  if (inputs.text?.trim() && !found.textOnly)
+    range += ", and the text given";
   if (inputs.status === "done") {
     warnings.push("`status: done` was ignored — done needs the name of a person who vouches, and a pipeline has none to give. The cards were commented on.");
   }
@@ -291,6 +311,25 @@ async function step(inputs, run, clients) {
     warnings.push(`The deploy was not recorded on the project (${describe(e)}); the next run will compare from the one before.`);
   }
   return { range, reached, unknown, warnings };
+}
+async function shippedByPullRequests(commits, github, prefixes, warnings) {
+  const bodies = new Map;
+  try {
+    for (const c of commits) {
+      const pulls = await github.pullRequestsFor(c.sha);
+      if (pulls === "forbidden") {
+        warnings.push("The token may not read pull requests (`permissions: pull-requests: read`), so the cards their descriptions ship were not read; the commits were.");
+        return { ids: [], pulls: 0 };
+      }
+      for (const p of pulls)
+        if (!bodies.has(p.number))
+          bodies.set(p.number, p.body);
+    }
+  } catch (e) {
+    warnings.push(`The pull requests could not be read (${describe(e)}), so the cards their descriptions ship were not read; the commits were.`);
+    return { ids: [], pulls: 0 };
+  }
+  return { ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size };
 }
 async function deployedCommits(inputs, run, clients, warnings) {
   const { github, witness } = clients;
