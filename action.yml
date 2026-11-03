@@ -34,8 +34,9 @@ inputs:
   since:
     description: >-
       Where to compare from instead of the previous deploy the project recorded — a commit, a
-      tag or any ref GitHub can compare from. Left out, the step takes the project's record,
-      and on the first deploy to an environment reads the text alone, or the head commit.
+      tag or any ref GitHub can compare from. Left out, the step takes the project's record;
+      before there is one, the previous successful run of this workflow; and with neither,
+      the text alone, or the head commit.
     required: false
   sha:
     description: >-

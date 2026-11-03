@@ -304,9 +304,9 @@ async function deployedCommits(inputs, run, clients, warnings) {
   }
   const previous = await witness.previousDeploy(run.repository, inputs.environment);
   if (previous === "unsupported")
-    return fromRuns(inputs, github, warnings);
+    return fromRuns(inputs, github, warnings, "older");
   if (previous === null)
-    return fallback(inputs, github, `the first deploy to ${inputs.environment} recorded here`);
+    return fromRuns(inputs, github, warnings, "first");
   const commits = await github.commitsSince(previous.sha);
   if (commits === null) {
     warnings.push(`The previous deploy's commit \`${previous.sha.slice(0, 7)}\` is no longer in this repository; ${nothingToCompareFrom(inputs)}.`);
@@ -315,14 +315,17 @@ async function deployedCommits(inputs, run, clients, warnings) {
   const named = previous.release ? ` (${previous.release})` : "";
   return { commits, range: `${commits.length} commit(s) since the previous deploy to ${inputs.environment}, \`${previous.sha.slice(0, 7)}\`${named}` };
 }
-async function fromRuns(inputs, github, warnings) {
+async function fromRuns(inputs, github, warnings, why) {
+  const first = `the first deploy to ${inputs.environment} recorded here`;
   const previous = await github.previousDeploySha();
   if (previous === "forbidden") {
+    if (why === "first")
+      return fallback(inputs, github, first);
     warnings.push(`The token may not read workflow runs (\`permissions: actions: read\`), so the previous deploy is unknown; ${nothingToCompareFrom(inputs)}. Pass \`since\`, grant the permission, or update witness, which then keeps the record itself.`);
     return fallback(inputs, github, "previous deploy unknown");
   }
   if (previous === null) {
-    return fallback(inputs, github, "no previous successful run of this workflow on this branch");
+    return fallback(inputs, github, why === "first" ? first : "no previous successful run of this workflow on this branch");
   }
   const commits = await github.commitsSince(previous.sha);
   if (commits === null) {
