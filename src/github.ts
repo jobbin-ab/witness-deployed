@@ -72,9 +72,22 @@ export class GitHub {
   }
 
   /**
+   * Whether the token may read this repository's pull requests at all. Asked once, by REST,
+   * before the GraphQL queries: what GraphQL answers a token without `pull-requests: read`
+   * is not documented and may be a quiet empty list, which would read as "no pull
+   * requests". A 401, 403 or 404 here is the refusal; a spent rate limit throws.
+   */
+  async mayReadPullRequests(): Promise<boolean> {
+    const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/pulls?per_page=1&state=all`;
+    const res = await this.get<unknown[]>(url, [404]);
+    return res !== 'forbidden' && res !== null;
+  }
+
+  /**
    * The pull requests the commits came from, with their descriptions, in one GraphQL query
    * for up to {@link PULLS_PER_QUERY} commits: the merged one that brought each to the
-   * default branch, and off it the open ones that carry it. A pull request several commits
+   * default branch, and off it the open ones that carry it — into this repository only, not
+   * the forks GitHub also links a commit to. A pull request several commits
    * share comes back once per commit; the caller keeps it once. `forbidden` when the token
    * may not read pull requests — a private repository whose job lacks `pull-requests: read`
    * — whether GitHub says so with a 401, 403 or 404, or with a FORBIDDEN or NOT_FOUND error.
@@ -84,14 +97,19 @@ export class GitHub {
     const [owner, name] = this.ctx.repository.split('/');
     const params = shas.map((_, i) => `$c${i}: GitObjectID!`).join(', ');
     const fields = shas
-      .map((_, i) => `c${i}: object(oid: $c${i}) { ... on Commit { associatedPullRequests(first: 10) { nodes { number body } } } }`)
+      .map((_, i) => `c${i}: object(oid: $c${i}) { ... on Commit { associatedPullRequests(first: 10) { nodes { number body baseRepository { nameWithOwner } } } } }`)
       .join(' ');
     const query = `query($owner: String!, $name: String!, ${params}) { repository(owner: $owner, name: $name) { ${fields} } }`;
     const variables: Record<string, string> = { owner: owner ?? '', name: name ?? '' };
     shas.forEach((sha, i) => (variables[`c${i}`] = sha));
 
     type Answer = {
-      data?: { repository: Record<string, { associatedPullRequests?: { nodes: { number: number; body: string | null }[] } } | null> | null } | null;
+      data?: {
+        repository: Record<
+          string,
+          { associatedPullRequests?: { nodes: { number: number; body: string | null; baseRepository: { nameWithOwner: string } | null }[] } } | null
+        > | null;
+      } | null;
       errors?: { type?: string; message: string }[];
     };
     const res = await this.request<Answer>(this.ctx.graphqlUrl ?? `${this.ctx.apiUrl}/graphql`, {
@@ -106,8 +124,13 @@ export class GitHub {
     if (errors.some((e) => e.type === 'FORBIDDEN' || e.type === 'NOT_FOUND')) return 'forbidden';
     const repository = res.data?.repository;
     if (!repository) throw new Error(errors[0]?.message ?? 'GitHub answered no repository');
+    // A commit can be linked to pull requests elsewhere in the fork network; only those
+    // into this repository ship from it.
+    const here = this.ctx.repository.toLowerCase();
     return Object.values(repository).flatMap((commit) =>
-      (commit?.associatedPullRequests?.nodes ?? []).map((p) => ({ number: p.number, body: p.body ?? '' })),
+      (commit?.associatedPullRequests?.nodes ?? [])
+        .filter((p) => p.baseRepository?.nameWithOwner.toLowerCase() === here)
+        .map((p) => ({ repository: here, number: p.number, body: p.body ?? '' })),
     );
   }
 

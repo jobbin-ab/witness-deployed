@@ -42,12 +42,17 @@ class GitHub {
         return commits;
     }
   }
+  async mayReadPullRequests() {
+    const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/pulls?per_page=1&state=all`;
+    const res = await this.get(url, [404]);
+    return res !== "forbidden" && res !== null;
+  }
   async pullRequestsOf(shas) {
     if (shas.length > PULLS_PER_QUERY)
       throw new Error(`at most ${PULLS_PER_QUERY} commits a query`);
     const [owner, name] = this.ctx.repository.split("/");
     const params = shas.map((_, i) => `$c${i}: GitObjectID!`).join(", ");
-    const fields = shas.map((_, i) => `c${i}: object(oid: $c${i}) { ... on Commit { associatedPullRequests(first: 10) { nodes { number body } } } }`).join(" ");
+    const fields = shas.map((_, i) => `c${i}: object(oid: $c${i}) { ... on Commit { associatedPullRequests(first: 10) { nodes { number body baseRepository { nameWithOwner } } } } }`).join(" ");
     const query = `query($owner: String!, $name: String!, ${params}) { repository(owner: $owner, name: $name) { ${fields} } }`;
     const variables = { owner: owner ?? "", name: name ?? "" };
     shas.forEach((sha, i) => variables[`c${i}`] = sha);
@@ -65,7 +70,8 @@ class GitHub {
     const repository = res.data?.repository;
     if (!repository)
       throw new Error(errors[0]?.message ?? "GitHub answered no repository");
-    return Object.values(repository).flatMap((commit) => (commit?.associatedPullRequests?.nodes ?? []).map((p) => ({ number: p.number, body: p.body ?? "" })));
+    const here = this.ctx.repository.toLowerCase();
+    return Object.values(repository).flatMap((commit) => (commit?.associatedPullRequests?.nodes ?? []).filter((p) => p.baseRepository?.nameWithOwner.toLowerCase() === here).map((p) => ({ repository: here, number: p.number, body: p.body ?? "" })));
   }
   async headCommit() {
     const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/commits/${this.ctx.sha}`;
@@ -140,7 +146,7 @@ function idsOf(commits, text, prefixes) {
   return citedIds([...commits, ...extra], prefixes);
 }
 var shipsLine = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)?(\*\*|__|\*|_)?ships(?![a-z0-9])(?::?\1:?)?(.*)$/i;
-var fence = /^\s{0,3}(`{3,}|~{3,})/;
+var fence = /^\s{0,3}(`{3,})(?!.*`)|^\s{0,3}(~{3,})/;
 function declaredIds(bodies, prefixes) {
   const lines = [];
   for (const body of bodies) {
@@ -148,7 +154,7 @@ function declaredIds(bodies, prefixes) {
     for (const line of body.split(/\r?\n/)) {
       const f = fence.exec(line);
       if (f) {
-        const mark = f[1];
+        const mark = f[1] ?? f[2];
         if (open === null)
           open = mark;
         else if (mark[0] === open[0] && mark.length >= open.length && line.trim() === mark)
@@ -387,16 +393,25 @@ async function shippedByPullRequests(commits, github, prefixes, warnings) {
   const bodies = new Map;
   const done = () => ({ ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size });
   const kept = () => bodies.size > 0 ? ` (the ${bodies.size} pull request(s) read before it count)` : "";
+  const refused = () => warnings.push(`The token may not read pull requests (\`permissions: pull-requests: read\`), so their Ships lines were not read${kept()}; the commits were.`);
+  if (commits.length === 0)
+    return done();
   try {
+    if (!await github.mayReadPullRequests()) {
+      refused();
+      return done();
+    }
     for (let i = 0;i < commits.length; i += PULLS_PER_QUERY) {
       const pulls = await github.pullRequestsOf(commits.slice(i, i + PULLS_PER_QUERY).map((c) => c.sha));
       if (pulls === "forbidden") {
-        warnings.push(`The token may not read pull requests (\`permissions: pull-requests: read\`), so their Ships lines were not read${kept()}; the commits were.`);
+        refused();
         return done();
       }
-      for (const p of pulls)
-        if (!bodies.has(p.number))
-          bodies.set(p.number, p.body);
+      for (const p of pulls) {
+        const key = `${p.repository}#${p.number}`;
+        if (!bodies.has(key))
+          bodies.set(key, p.body);
+      }
     }
   } catch (e) {
     const why = e instanceof GitHubRateLimited ? e.message : `the pull requests could not be read (${describe(e)})`;

@@ -61,6 +61,11 @@ describe('which ids a deploy cites', () => {
     expect(declaredIds([body], ['AL'])).toEqual(['AL-07']);
   });
 
+  test('backticks with another backtick on the line are inline code, not a fence', () => {
+    const body = ['```Ships``` is the word to use', 'Ships AL-04', '```', 'Ships AL-05', '```'].join('\n');
+    expect(declaredIds([body], ['AL'])).toEqual(['AL-04']);
+  });
+
   test('only the word that opens the line: not Shipped, not Shipshape, not a Ships mid-sentence', () => {
     const body = 'Shipped AL-04 before.\nShipshape AL-05\nThis ships AL-06 too.\n> Ships AL-07\n**Shipped** AL-08\n### Shipping AL-09';
     expect(declaredIds([body], ['AL'])).toEqual([]);

@@ -28,7 +28,12 @@ export type Run = {
 export type Commit = { sha: string; message: string };
 
 /** A pull request a deployed commit came from: its number, and its description. */
-export type PullRequest = { number: number; body: string };
+export type PullRequest = {
+  /** `owner/repo` the pull request merges into: this repository, for any pull request kept. */
+  repository: string;
+  number: number;
+  body: string;
+};
 
 /** The card as the step reads it: enough to comment, to decide a move, and to send If-Match. */
 export type Card = { id: string; title: string; status: string; version: number };
@@ -76,8 +81,12 @@ export function idsOf(commits: readonly Commit[], text: string | undefined, pref
  */
 const shipsLine = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)?(\*\*|__|\*|_)?ships(?![a-z0-9])(?::?\1:?)?(.*)$/i;
 
-/** A fence that opens or closes a code block: three or more backticks or tildes. */
-const fence = /^\s{0,3}(`{3,}|~{3,})/;
+/**
+ * A fence that opens or closes a code block: three or more backticks or tildes. As
+ * CommonMark has it, a run of backticks with another backtick later on the line is inline
+ * code, not a fence.
+ */
+const fence = /^\s{0,3}(`{3,})(?!.*`)|^\s{0,3}(~{3,})/;
 
 /**
  * The ids a pull request's description declares it ships: those on its `Ships` lines and
@@ -92,7 +101,7 @@ export function declaredIds(bodies: readonly string[], prefixes: readonly string
     for (const line of body.split(/\r?\n/)) {
       const f = fence.exec(line);
       if (f) {
-        const mark = f[1]!;
+        const mark = (f[1] ?? f[2])!;
         if (open === null) open = mark;
         else if (mark[0] === open[0] && mark.length >= open.length && line.trim() === mark) open = null;
         continue;

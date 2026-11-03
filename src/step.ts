@@ -98,7 +98,8 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
  * count. A repository set to put the description in the commit message instead has every
  * id in it counted through the commit — nothing here can tell, so the README says to keep
  * that setting on the title. The commits are asked about in one GraphQL query per
- * {@link PULLS_PER_QUERY}. A token that may not read pull requests, a spent rate limit, or a
+ * {@link PULLS_PER_QUERY}, after one REST call that asks whether the token may read pull
+ * requests at all. A token that may not read pull requests, a spent rate limit, or a
  * GitHub that fails to answer costs a warning and the pull requests not yet read — never
  * the ones already read, nor the commits' own ids.
  */
@@ -108,17 +109,27 @@ export async function shippedByPullRequests(
   prefixes: readonly string[],
   warnings: string[],
 ): Promise<{ ids: string[]; pulls: number }> {
-  const bodies = new Map<number, string>();
+  const bodies = new Map<string, string>();
   const done = () => ({ ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size });
   const kept = () => (bodies.size > 0 ? ` (the ${bodies.size} pull request(s) read before it count)` : '');
+  const refused = () =>
+    warnings.push(`The token may not read pull requests (\`permissions: pull-requests: read\`), so their Ships lines were not read${kept()}; the commits were.`);
+  if (commits.length === 0) return done();
   try {
+    if (!(await github.mayReadPullRequests())) {
+      refused();
+      return done();
+    }
     for (let i = 0; i < commits.length; i += PULLS_PER_QUERY) {
       const pulls = await github.pullRequestsOf(commits.slice(i, i + PULLS_PER_QUERY).map((c) => c.sha));
       if (pulls === 'forbidden') {
-        warnings.push(`The token may not read pull requests (\`permissions: pull-requests: read\`), so their Ships lines were not read${kept()}; the commits were.`);
+        refused();
         return done();
       }
-      for (const p of pulls) if (!bodies.has(p.number)) bodies.set(p.number, p.body);
+      for (const p of pulls) {
+        const key = `${p.repository}#${p.number}`;
+        if (!bodies.has(key)) bodies.set(key, p.body);
+      }
     }
   } catch (e) {
     const why = e instanceof GitHubRateLimited ? e.message : `the pull requests could not be read (${describe(e)})`;

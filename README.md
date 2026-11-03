@@ -44,10 +44,12 @@ request titles.
 A card is marked as shipped when its id appears in one of three places in the deploy:
 
 - **A commit message.** Any id in it counts, wherever it stands. A merge or squash commit
-  carries the pull request's title, so an id in the title counts too. A repository whose
-  default commit message for merges is "pull request title and description" puts the whole
-  description in the commit, and then every id in the description counts, `Ships` line or
-  not; keep that setting on the title.
+  carries the pull request's title, so an id in the title counts too. A repository has two
+  settings for that message, under **Settings → General → Pull Requests**: the default
+  commit message for merge commits, and the one for squash merging. Either one set to
+  **Pull request title and description** puts the whole description in the commit, and
+  then every id in the description counts, `Ships` line or not; keep both on **Default
+  message** or **Pull request title**.
 - **A `Ships` line in a pull request's description.** Only that line counts; an id anywhere
   else in the description does not, so the description can mention other cards freely.
 - **The `text` input,** such as a release's notes. Any id in it counts.
@@ -62,7 +64,8 @@ Here GN-660 and GN-661 are marked as shipped, and GN-606 is not. The line starts
 `Ships`, in any case, after any indentation, one list marker or heading mark, and any
 emphasis: `- ships: GN-660`, `**Ships:** GN-660`, `__Ships__ GN-660` and `## Ships GN-660`
 all count, and every id on the rest of that line counts. `Shipped GN-660`, `ships` in the
-middle of a sentence, or a `Ships` line inside a fenced code block does not.
+middle of a sentence, or a `Ships` line inside a fenced code block does not. Nor does a
+list under a `## Ships` heading: the ids go on the heading's own line.
 
 All three are always read, so a card is marked if any of them names it. Keep an id out of
 a commit message or a pull request's title when the change does not ship that card.
