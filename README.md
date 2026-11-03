@@ -36,11 +36,15 @@ On a workflow that runs on a release, the notes name the cards and the tag names
     release: ${{ github.event.release.tag_name }}
 ```
 
-## Naming the cards in a pull request
+## Naming the cards a change ships
 
-A squash or merge commit carries the pull request's title, not its description, so cards
-named only in the description would never reach the commits. The step reads the
-description too, but only a line that declares what the pull request ships:
+A card is marked as shipped when its id appears in one of three places in the deploy:
+
+- **A commit message.** Any id in it counts, wherever it stands. A merge or squash commit
+  carries the pull request's title, so an id in the title counts too.
+- **A `Ships` line in a pull request's description.** Only that line counts; an id anywhere
+  else in the description does not, so the description can mention other cards freely.
+- **The `text` input,** such as a release's notes. Any id in it counts.
 
 ```markdown
 Ships GN-660, GN-661.
@@ -48,15 +52,21 @@ Ships GN-660, GN-661.
 Builds on GN-606; the export is left for its own card.
 ```
 
-Here GN-660 and GN-661 are marked as shipped; GN-606 is not, nor is any id elsewhere in
-the description. The line starts with `Ships`, in any case, after any indentation and
-one list marker (`- ships: GN-660` counts), and every id on the rest of that line counts.
-`Shipped GN-660`, or `ships` in the middle of a sentence, does not. Commit messages are
-read as before: any id in them counts.
+Here GN-660 and GN-661 are marked as shipped, and GN-606 is not. The line starts with
+`Ships`, in any case, after any indentation and one list marker (`- ships: GN-660` counts),
+and every id on the rest of that line counts. `Shipped GN-660`, or `ships` in the middle of
+a sentence, does not.
+
+All three are always read, so a card is marked if any of them names it. Keep an id out of
+a commit message or a pull request's title when the change does not ship that card.
+
+Agents write the commits and pull requests, so put this in your project's working rules:
+name the cards a change ships on a `Ships` line or in a commit message, and keep every
+other card's id out of commit messages and pull request titles.
 
 On a private repository the job's token needs `pull-requests: read` to see the pull
 requests; on a public one it can read them already. Without it the step warns and reads
-the commits alone.
+the commits and the text alone.
 
 ```yaml
 permissions:
