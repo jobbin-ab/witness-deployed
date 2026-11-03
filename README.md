@@ -23,7 +23,10 @@ What the card shows afterwards:
 > Deployed to **staging** at `3f9c2a1` · run 4183 — https://staging.example.com
 > — acme/shop deploy, via GitHub Actions
 
-On a workflow that runs on a release, the notes name the cards and the tag names the deploy:
+On a workflow that runs on a release, the notes name the cards and the tag names the deploy.
+The notes are not the only list: a pull request's title, carried by its merge commit, and
+its `Ships` lines count too, so a team whose notes are the list keeps card ids out of pull
+request titles.
 
 ```yaml
 - uses: jobbin-ab/witness-deployed@v1
@@ -41,7 +44,10 @@ On a workflow that runs on a release, the notes name the cards and the tag names
 A card is marked as shipped when its id appears in one of three places in the deploy:
 
 - **A commit message.** Any id in it counts, wherever it stands. A merge or squash commit
-  carries the pull request's title, so an id in the title counts too.
+  carries the pull request's title, so an id in the title counts too. A repository whose
+  default commit message for merges is "pull request title and description" puts the whole
+  description in the commit, and then every id in the description counts, `Ships` line or
+  not; keep that setting on the title.
 - **A `Ships` line in a pull request's description.** Only that line counts; an id anywhere
   else in the description does not, so the description can mention other cards freely.
 - **The `text` input,** such as a release's notes. Any id in it counts.
@@ -53,9 +59,10 @@ Builds on GN-606; the export is left for its own card.
 ```
 
 Here GN-660 and GN-661 are marked as shipped, and GN-606 is not. The line starts with
-`Ships`, in any case, after any indentation and one list marker (`- ships: GN-660` counts),
-and every id on the rest of that line counts. `Shipped GN-660`, or `ships` in the middle of
-a sentence, does not.
+`Ships`, in any case, after any indentation, one list marker or heading mark, and any
+emphasis: `- ships: GN-660`, `**Ships:** GN-660`, `__Ships__ GN-660` and `## Ships GN-660`
+all count, and every id on the rest of that line counts. `Shipped GN-660`, `ships` in the
+middle of a sentence, or a `Ships` line inside a fenced code block does not.
 
 All three are always read, so a card is marked if any of them names it. Keep an id out of
 a commit message or a pull request's title when the change does not ship that card.
@@ -63,6 +70,10 @@ a commit message or a pull request's title when the change does not ship that ca
 Agents write the commits and pull requests, so put this in your project's working rules:
 name the cards a change ships on a `Ships` line or in a commit message, and keep every
 other card's id out of commit messages and pull request titles.
+
+GitHub links a commit to the pull request that merged it only once the commit is on the
+default branch. A deploy from any other branch reads the `Ships` lines of the open pull
+requests that carry its commits, and no merged one.
 
 On a private repository the job's token needs `pull-requests: read` to see the pull
 requests; on a public one it can read them already. Without it the step warns and reads
@@ -117,9 +128,11 @@ card stays where it was.
    branch, which `permissions: actions: read` lets it read, so a team that deploys on pushes
    keeps its range on that run. With nothing to compare from at all, the text alone is read
    when `text` is given, otherwise the head commit, and the summary says so.
-3. Asks GitHub which pull requests those commits came from, reads each once, and adds the
-   ids on its `Ships` lines to the commits' own; the summary counts the pull requests read.
-   A token that cannot read them costs those ids and a warning, never the commits'.
+3. Asks GitHub which pull requests those commits came from, in one GraphQL query per
+   hundred commits, reads each pull request once, and adds the ids on its `Ships` lines to
+   the commits' own; the summary counts the pull requests read. A token that cannot read
+   them, or a spent rate limit, costs a warning and the pull requests not yet read, never
+   the ones already read or the commits'.
 4. For each cited card: one comment; the deploy record the card keeps per environment
    (what the list's mark and its filter read, and what an agent reads instead of the
    comment); and, when `status` is set and the card is in Blocked, one status change on

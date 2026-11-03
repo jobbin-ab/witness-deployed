@@ -51,8 +51,18 @@ describe('which ids a deploy cites', () => {
     expect(declaredIds([body], ['AL', 'VX'])).toEqual(['AL-04', 'VX-13', 'AL-07']);
   });
 
+  test('a Ships word in emphasis or as a heading', () => {
+    const body = '**Ships:** AL-04\n__Ships__ AL-05\n## Ships AL-06\n- **Ships** VX-13\n*ships*: AL-07';
+    expect(declaredIds([body], ['AL', 'VX'])).toEqual(['AL-04', 'AL-05', 'AL-06', 'VX-13', 'AL-07']);
+  });
+
+  test('a Ships line inside a fenced code block quotes, it does not declare', () => {
+    const body = ['```markdown', 'Ships AL-04', '```', '~~~~', 'Ships AL-05', '~~~', '```', 'Ships AL-06', '~~~~', 'Ships AL-07'].join('\n');
+    expect(declaredIds([body], ['AL'])).toEqual(['AL-07']);
+  });
+
   test('only the word that opens the line: not Shipped, not Shipshape, not a Ships mid-sentence', () => {
-    const body = 'Shipped AL-04 before.\nShipshape AL-05\nThis ships AL-06 too.\n> Ships AL-07';
+    const body = 'Shipped AL-04 before.\nShipshape AL-05\nThis ships AL-06 too.\n> Ships AL-07\n**Shipped** AL-08\n### Shipping AL-09';
     expect(declaredIds([body], ['AL'])).toEqual([]);
   });
 

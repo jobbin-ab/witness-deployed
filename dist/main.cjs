@@ -2,6 +2,16 @@
 var import_node_fs = require("node:fs");
 
 // src/github.ts
+class GitHubRateLimited extends Error {
+  resetAt;
+  constructor(resetAt) {
+    const when = resetAt ? ` (it resets at ${resetAt.toISOString().slice(11, 16)} UTC)` : "";
+    super(`GitHub's API rate limit for this token was reached${when}`);
+    this.resetAt = resetAt;
+  }
+}
+var PULLS_PER_QUERY = 100;
+
 class GitHub {
   ctx;
   fetchImpl;
@@ -21,18 +31,41 @@ class GitHub {
     return previous ? { sha: previous.head_sha, runNumber: previous.run_number } : null;
   }
   async commitsSince(base) {
-    const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/compare/${base}...${this.ctx.sha}?per_page=250`;
-    const res = await this.get(url, [404, 422]);
-    if (res === "forbidden" || res === null)
-      return null;
-    return res.commits.map((c) => ({ sha: c.sha, message: c.commit.message }));
+    const commits = [];
+    for (let page = 1;; page++) {
+      const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/compare/${base}...${this.ctx.sha}?per_page=100&page=${page}`;
+      const res = await this.get(url, [404, 422]);
+      if (res === "forbidden" || res === null)
+        return page === 1 ? null : commits;
+      commits.push(...res.commits.map((c) => ({ sha: c.sha, message: c.commit.message })));
+      if (res.commits.length < 100 || commits.length >= res.total_commits)
+        return commits;
+    }
   }
-  async pullRequestsFor(sha) {
-    const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/commits/${sha}/pulls?per_page=100`;
-    const res = await this.get(url, [404]);
+  async pullRequestsOf(shas) {
+    if (shas.length > PULLS_PER_QUERY)
+      throw new Error(`at most ${PULLS_PER_QUERY} commits a query`);
+    const [owner, name] = this.ctx.repository.split("/");
+    const params = shas.map((_, i) => `$c${i}: GitObjectID!`).join(", ");
+    const fields = shas.map((_, i) => `c${i}: object(oid: $c${i}) { ... on Commit { associatedPullRequests(first: 10) { nodes { number body } } } }`).join(" ");
+    const query = `query($owner: String!, $name: String!, ${params}) { repository(owner: $owner, name: $name) { ${fields} } }`;
+    const variables = { owner: owner ?? "", name: name ?? "" };
+    shas.forEach((sha, i) => variables[`c${i}`] = sha);
+    const res = await this.request(this.ctx.graphqlUrl ?? `${this.ctx.apiUrl}/graphql`, {
+      method: "POST",
+      body: JSON.stringify({ query, variables })
+    }, [404]);
     if (res === "forbidden" || res === null)
       return "forbidden";
-    return res.map((p) => ({ number: p.number, body: p.body ?? "" }));
+    const errors = res.errors ?? [];
+    if (errors.some((e) => e.type === "RATE_LIMITED"))
+      throw new GitHubRateLimited(null);
+    if (errors.some((e) => e.type === "FORBIDDEN" || e.type === "NOT_FOUND"))
+      return "forbidden";
+    const repository = res.data?.repository;
+    if (!repository)
+      throw new Error(errors[0]?.message ?? "GitHub answered no repository");
+    return Object.values(repository).flatMap((commit) => (commit?.associatedPullRequests?.nodes ?? []).map((p) => ({ number: p.number, body: p.body ?? "" })));
   }
   async headCommit() {
     const url = `${this.ctx.apiUrl}/repos/${this.ctx.repository}/commits/${this.ctx.sha}`;
@@ -41,14 +74,21 @@ class GitHub {
       throw new Error("the token cannot read this repository's commits");
     return { sha: res.sha, message: res.commit.message };
   }
-  async get(url, nullOn = []) {
+  get(url, nullOn = []) {
+    return this.request(url, {}, nullOn);
+  }
+  async request(url, init, nullOn = []) {
     const res = await this.fetchImpl(url, {
+      ...init,
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${this.ctx.token}`,
-        "X-GitHub-Api-Version": "2022-11-28"
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...init.body ? { "Content-Type": "application/json" } : {}
       }
     });
+    if (rateLimited(res))
+      throw new GitHubRateLimited(resetAt(res));
     if (res.status === 401 || res.status === 403)
       return "forbidden";
     if (nullOn.includes(res.status))
@@ -57,6 +97,20 @@ class GitHub {
       throw new Error(`GitHub answered ${res.status} for ${url.replace(this.ctx.apiUrl, "")}`);
     return await res.json();
   }
+}
+function rateLimited(res) {
+  if (res.status === 429)
+    return true;
+  if (res.status !== 403)
+    return false;
+  return res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after");
+}
+function resetAt(res) {
+  const after = Number(res.headers.get("retry-after"));
+  if (res.headers.has("retry-after") && Number.isFinite(after))
+    return new Date(Date.now() + after * 1000);
+  const reset = Number(res.headers.get("x-ratelimit-reset"));
+  return res.headers.has("x-ratelimit-reset") && Number.isFinite(reset) ? new Date(reset * 1000) : null;
 }
 function workflowFile(workflowRef) {
   const m = /\.github\/workflows\/([^@]+)@/.exec(workflowRef);
@@ -85,12 +139,29 @@ function idsOf(commits, text, prefixes) {
   const extra = text?.trim() ? [{ sha: "", message: text }] : [];
   return citedIds([...commits, ...extra], prefixes);
 }
-var shipsLine = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?ships\b(.*)$/i;
+var shipsLine = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)?(\*\*|__|\*|_)?ships(?![a-z0-9])(?::?\1:?)?(.*)$/i;
+var fence = /^\s{0,3}(`{3,}|~{3,})/;
 function declaredIds(bodies, prefixes) {
-  const lines = bodies.flatMap((body) => body.split(/\r?\n/).flatMap((line) => {
-    const m = shipsLine.exec(line);
-    return m ? [{ sha: "", message: m[1] }] : [];
-  }));
+  const lines = [];
+  for (const body of bodies) {
+    let open = null;
+    for (const line of body.split(/\r?\n/)) {
+      const f = fence.exec(line);
+      if (f) {
+        const mark = f[1];
+        if (open === null)
+          open = mark;
+        else if (mark[0] === open[0] && mark.length >= open.length && line.trim() === mark)
+          open = null;
+        continue;
+      }
+      if (open !== null)
+        continue;
+      const m = shipsLine.exec(line);
+      if (m)
+        lines.push({ sha: "", message: m[2] });
+    }
+  }
   return citedIds(lines, prefixes);
 }
 function subject(message) {
@@ -118,7 +189,7 @@ function moveTo(card, status) {
 function summaryMarkdown(o, inputs) {
   const lines = [`### witness · deployed to ${inputs.environment}`, "", o.range, ""];
   if (o.reached.length === 0 && o.unknown.length === 0) {
-    lines.push("No card was cited by these commits.");
+    lines.push("No card was cited by the commits, pull requests or text this deploy read.");
   }
   if (o.reached.length > 0) {
     lines.push("| Card | Title | Was | Now |", "|---|---|---|---|");
@@ -314,22 +385,27 @@ async function step(inputs, run, clients) {
 }
 async function shippedByPullRequests(commits, github, prefixes, warnings) {
   const bodies = new Map;
+  const done = () => ({ ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size });
+  const kept = () => bodies.size > 0 ? ` (the ${bodies.size} pull request(s) read before it count)` : "";
   try {
-    for (const c of commits) {
-      const pulls = await github.pullRequestsFor(c.sha);
+    for (let i = 0;i < commits.length; i += PULLS_PER_QUERY) {
+      const pulls = await github.pullRequestsOf(commits.slice(i, i + PULLS_PER_QUERY).map((c) => c.sha));
       if (pulls === "forbidden") {
-        warnings.push("The token may not read pull requests (`permissions: pull-requests: read`), so the cards their descriptions ship were not read; the commits were.");
-        return { ids: [], pulls: 0 };
+        warnings.push(`The token may not read pull requests (\`permissions: pull-requests: read\`), so their Ships lines were not read${kept()}; the commits were.`);
+        return done();
       }
       for (const p of pulls)
         if (!bodies.has(p.number))
           bodies.set(p.number, p.body);
     }
   } catch (e) {
-    warnings.push(`The pull requests could not be read (${describe(e)}), so the cards their descriptions ship were not read; the commits were.`);
-    return { ids: [], pulls: 0 };
+    const why = e instanceof GitHubRateLimited ? e.message : `the pull requests could not be read (${describe(e)})`;
+    warnings.push(`${capitalise(why)}, so the Ships lines of the pull requests not yet read were skipped${kept()}; the commits were read.`);
   }
-  return { ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size };
+  return done();
+}
+function capitalise(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 async function deployedCommits(inputs, run, clients, warnings) {
   const { github, witness } = clients;
@@ -456,6 +532,7 @@ async function main() {
   const github = new GitHub({
     ...run,
     apiUrl: env("GITHUB_API_URL") || "https://api.github.com",
+    graphqlUrl: env("GITHUB_GRAPHQL_URL") || undefined,
     workflowRef: env("GITHUB_WORKFLOW_REF"),
     refName: env("GITHUB_REF_NAME"),
     token

@@ -70,6 +70,7 @@ async function main(): Promise<void> {
   const github = new GitHub({
     ...run,
     apiUrl: env('GITHUB_API_URL') || 'https://api.github.com',
+    graphqlUrl: env('GITHUB_GRAPHQL_URL') || undefined,
     workflowRef: env('GITHUB_WORKFLOW_REF'),
     refName: env('GITHUB_REF_NAME'),
     token,

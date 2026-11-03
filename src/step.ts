@@ -4,7 +4,7 @@
  * in the summary, and the next card is still written.
  */
 import { actor as actorFor, commentBody, declaredIds, idsOf, moveTo, runUrl, subject, type Commit, type Inputs, type Outcome, type Reached, type Run } from './lib.ts';
-import type { GitHub } from './github.ts';
+import { GitHubRateLimited, PULLS_PER_QUERY, type GitHub } from './github.ts';
 import { Witness, WitnessError, type Fetch } from './witness.ts';
 
 export type Clients = { witness: Witness; github: GitHub };
@@ -93,11 +93,14 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
 
 /**
  * The ids the deployed commits' pull requests declare they ship. A squash or merge commit
- * carries the pull request's title, not its description, so a team that names the cards in
- * the description is read here, each pull request once. Only its `Ships` lines count; the
- * commits themselves still count any id, as before. A token that may not read pull
- * requests, or a GitHub that fails to answer, costs these ids and a warning — never the
- * commits' own.
+ * carries the pull request's title by default, not its description, so a team that names
+ * the cards in the description is read here, each pull request once. Only its `Ships` lines
+ * count. A repository set to put the description in the commit message instead has every
+ * id in it counted through the commit — nothing here can tell, so the README says to keep
+ * that setting on the title. The commits are asked about in one GraphQL query per
+ * {@link PULLS_PER_QUERY}. A token that may not read pull requests, a spent rate limit, or a
+ * GitHub that fails to answer costs a warning and the pull requests not yet read — never
+ * the ones already read, nor the commits' own ids.
  */
 export async function shippedByPullRequests(
   commits: readonly Commit[],
@@ -106,20 +109,26 @@ export async function shippedByPullRequests(
   warnings: string[],
 ): Promise<{ ids: string[]; pulls: number }> {
   const bodies = new Map<number, string>();
+  const done = () => ({ ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size });
+  const kept = () => (bodies.size > 0 ? ` (the ${bodies.size} pull request(s) read before it count)` : '');
   try {
-    for (const c of commits) {
-      const pulls = await github.pullRequestsFor(c.sha);
+    for (let i = 0; i < commits.length; i += PULLS_PER_QUERY) {
+      const pulls = await github.pullRequestsOf(commits.slice(i, i + PULLS_PER_QUERY).map((c) => c.sha));
       if (pulls === 'forbidden') {
-        warnings.push('The token may not read pull requests (`permissions: pull-requests: read`), so the cards their descriptions ship were not read; the commits were.');
-        return { ids: [], pulls: 0 };
+        warnings.push(`The token may not read pull requests (\`permissions: pull-requests: read\`), so their Ships lines were not read${kept()}; the commits were.`);
+        return done();
       }
       for (const p of pulls) if (!bodies.has(p.number)) bodies.set(p.number, p.body);
     }
   } catch (e) {
-    warnings.push(`The pull requests could not be read (${describe(e)}), so the cards their descriptions ship were not read; the commits were.`);
-    return { ids: [], pulls: 0 };
+    const why = e instanceof GitHubRateLimited ? e.message : `the pull requests could not be read (${describe(e)})`;
+    warnings.push(`${capitalise(why)}, so the Ships lines of the pull requests not yet read were skipped${kept()}; the commits were read.`);
   }
-  return { ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size };
+  return done();
+}
+
+function capitalise(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 type Found = { commits: Commit[]; range: string; textOnly?: boolean };

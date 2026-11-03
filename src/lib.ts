@@ -69,24 +69,39 @@ export function idsOf(commits: readonly Commit[], text: string | undefined, pref
 }
 
 /**
- * A line of a pull request's description that declares what it ships: `Ships GN-660.` or
- * `- ships: GN-660, GN-661`. The word opens the line — after any indentation and one list
- * marker — in any case, and stands alone, so `Shipshape` and `Shipped` are not it.
+ * A line of a pull request's description that declares what it ships: `Ships GN-660.`,
+ * `- ships: GN-660, GN-661`, `**Ships:** GN-660`, `## Ships GN-660`. The word opens the
+ * line — after any indentation, then one heading mark or list marker, then any emphasis —
+ * in any case, and stands alone, so `Shipshape` and `Shipped` are not it.
  */
-const shipsLine = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?ships\b(.*)$/i;
+const shipsLine = /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)?(\*\*|__|\*|_)?ships(?![a-z0-9])(?::?\1:?)?(.*)$/i;
+
+/** A fence that opens or closes a code block: three or more backticks or tildes. */
+const fence = /^\s{0,3}(`{3,}|~{3,})/;
 
 /**
  * The ids a pull request's description declares it ships: those on its `Ships` lines and
  * nowhere else. A description mentions other cards in passing — "builds on GN-606", "left
- * for its own card" — and a mention is not a shipment.
+ * for its own card" — and a mention is not a shipment; nor is a line inside a fenced code
+ * block, which quotes rather than declares.
  */
 export function declaredIds(bodies: readonly string[], prefixes: readonly string[]): string[] {
-  const lines = bodies.flatMap((body) =>
-    body.split(/\r?\n/).flatMap((line) => {
+  const lines: Commit[] = [];
+  for (const body of bodies) {
+    let open: string | null = null;
+    for (const line of body.split(/\r?\n/)) {
+      const f = fence.exec(line);
+      if (f) {
+        const mark = f[1]!;
+        if (open === null) open = mark;
+        else if (mark[0] === open[0] && mark.length >= open.length && line.trim() === mark) open = null;
+        continue;
+      }
+      if (open !== null) continue;
       const m = shipsLine.exec(line);
-      return m ? [{ sha: '', message: m[1]! }] : [];
-    }),
-  );
+      if (m) lines.push({ sha: '', message: m[2]! });
+    }
+  }
   return citedIds(lines, prefixes);
 }
 
@@ -143,7 +158,7 @@ export type Outcome = {
 export function summaryMarkdown(o: Outcome, inputs: Pick<Inputs, 'environment'>): string {
   const lines: string[] = [`### witness · deployed to ${inputs.environment}`, '', o.range, ''];
   if (o.reached.length === 0 && o.unknown.length === 0) {
-    lines.push('No card was cited by these commits.');
+    lines.push('No card was cited by the commits, pull requests or text this deploy read.');
   }
   if (o.reached.length > 0) {
     lines.push('| Card | Title | Was | Now |', '|---|---|---|---|');
