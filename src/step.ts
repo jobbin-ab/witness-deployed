@@ -93,10 +93,12 @@ type Found = { commits: Commit[]; range: string; textOnly?: boolean };
 /**
  * The commits this deploy shipped: from the previous deploy to this environment up to this
  * one. Where the previous deploy is known from, in order: `since`, when the workflow says;
- * the project's own record (witness keeps it since 2026-11-03), which the step wrote on its last run; and, for a
- * witness that predates the record, the previous successful run of this workflow on this
- * branch. With nothing to compare from, the text alone when the workflow handed one over —
- * a list someone wrote beats a guess — and otherwise the head commit, said so in the summary.
+ * the project's own record (witness keeps it since 2026-11-03), which the step wrote on its
+ * last run; and, when there is no record yet — a witness that predates it, or the first run
+ * of a step that writes it — the previous successful run of this workflow on this branch,
+ * so a team that upgrades keeps its range on the upgrade run. With nothing to compare from,
+ * the text alone when the workflow handed one over — a list someone wrote beats a guess —
+ * and otherwise the head commit, said so in the summary.
  */
 async function deployedCommits(inputs: Inputs, run: Run, clients: Clients, warnings: string[]): Promise<Found> {
   const { github, witness } = clients;
@@ -108,8 +110,8 @@ async function deployedCommits(inputs: Inputs, run: Run, clients: Clients, warni
     return fallback(inputs, github, 'since could not be compared from');
   }
   const previous = await witness.previousDeploy(run.repository, inputs.environment);
-  if (previous === 'unsupported') return fromRuns(inputs, github, warnings);
-  if (previous === null) return fallback(inputs, github, `the first deploy to ${inputs.environment} recorded here`);
+  if (previous === 'unsupported') return fromRuns(inputs, github, warnings, 'older');
+  if (previous === null) return fromRuns(inputs, github, warnings, 'first');
   const commits = await github.commitsSince(previous.sha);
   if (commits === null) {
     warnings.push(`The previous deploy's commit \`${previous.sha.slice(0, 7)}\` is no longer in this repository; ${nothingToCompareFrom(inputs)}.`);
@@ -119,15 +121,23 @@ async function deployedCommits(inputs: Inputs, run: Run, clients: Clients, warni
   return { commits, range: `${commits.length} commit(s) since the previous deploy to ${inputs.environment}, \`${previous.sha.slice(0, 7)}\`${named}` };
 }
 
-/** Before the project kept the record: the previous successful run of this workflow on this branch. */
-async function fromRuns(inputs: Inputs, github: GitHub, warnings: string[]): Promise<Found> {
+/**
+ * No record to compare from: the previous successful run of this workflow on this branch.
+ * `older` is a witness from before the record, where this is the only way and a token that
+ * may not read runs is worth a warning. `first` is a project with no deploy recorded here
+ * yet, where this run writes the record and the next needs no runs at all — so a token that
+ * cannot read them is no fault, and the summary says only that this is the first deploy.
+ */
+async function fromRuns(inputs: Inputs, github: GitHub, warnings: string[], why: 'older' | 'first'): Promise<Found> {
+  const first = `the first deploy to ${inputs.environment} recorded here`;
   const previous = await github.previousDeploySha();
   if (previous === 'forbidden') {
+    if (why === 'first') return fallback(inputs, github, first);
     warnings.push(`The token may not read workflow runs (\`permissions: actions: read\`), so the previous deploy is unknown; ${nothingToCompareFrom(inputs)}. Pass \`since\`, grant the permission, or update witness, which then keeps the record itself.`);
     return fallback(inputs, github, 'previous deploy unknown');
   }
   if (previous === null) {
-    return fallback(inputs, github, 'no previous successful run of this workflow on this branch');
+    return fallback(inputs, github, why === 'first' ? first : 'no previous successful run of this workflow on this branch');
   }
   const commits = await github.commitsSince(previous.sha);
   if (commits === null) {

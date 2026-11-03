@@ -194,7 +194,7 @@ describe('the step against a real project', () => {
     const link = edit!;
     const environment = fresh();
     const first = { link, environment, release: 'v1.0.0' };
-    const nothing = await step(first, run, { witness: makeWitness(first, run), github: githubStandIn(['Bump deps (PROJ-9)']) });
+    const nothing = await step(first, run, { witness: makeWitness(first, run), github: githubStandIn(['Bump deps (PROJ-9)'], { runs: 'none' }) });
     expect(nothing.range).toContain(`the head commit only — the first deploy to ${environment} recorded here`);
     expect(nothing.reached).toEqual([]);
 
@@ -213,16 +213,30 @@ describe('the step against a real project', () => {
   live('with nothing to compare from, the text alone is read when given — never the head commit beside it', async () => {
     const link = edit!;
     const { blocked, done } = await seed(link);
+    // A release on a tag: no earlier run matches it, and a token that may not read runs is
+    // the same answer — neither is worth a warning on a step that is about to write the record.
     const withText = { link, environment: fresh(), text: `Shipped: ${blocked.id}` };
-    const github = githubStandIn([`Tidy (${done.id})`]);
+    const github = githubStandIn([`Tidy (${done.id})`], { runs: 'forbidden' });
     const outcome = await step(withText, run, { witness: makeWitness(withText, run), github });
     expect(outcome.range).toContain('the text given only');
+    expect(outcome.warnings).toEqual([]);
     expect(outcome.reached.map((r) => r.id)).toEqual([blocked.id]);
     expect(github.compared).toEqual([]);
 
     const withoutText = { link, environment: fresh() };
-    const head = await step(withoutText, run, { witness: makeWitness(withoutText, run), github: githubStandIn([`Tidy (${done.id})`]) });
+    const head = await step(withoutText, run, { witness: makeWitness(withoutText, run), github: githubStandIn([`Tidy (${done.id})`], { runs: 'none' }) });
     expect(head.reached.map((r) => r.id)).toEqual([done.id]);
+  });
+
+  live('the run that upgrades keeps its range: no record yet, so the previous run of this workflow', async () => {
+    const link = edit!;
+    const { blocked, done } = await seed(link);
+    const inputs = { link, environment: fresh() };
+    const github = githubStandIn([`Fix (${blocked.id})`, `Tidy (${done.id})`]);
+    const outcome = await step(inputs, run, { witness: makeWitness(inputs, run), github });
+    expect(github.compared).toEqual([previousSha]);
+    expect(outcome.range).toContain('2 commit(s) since the previous deploy, `1234567` (run 4182)');
+    expect(outcome.reached.map((r) => r.id)).toEqual([blocked.id, done.id]);
   });
 
   live('`since` wins over the record, and the deploy is recorded all the same', async () => {

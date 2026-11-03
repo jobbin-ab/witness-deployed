@@ -72,11 +72,12 @@ card stays where it was.
    repository shipped — the record the step itself wrote on its last run — and takes the
    commits between it and this one from the GitHub API. No checkout, no history depth, no
    permission to read workflow runs: the range is right whether a deploy is a push to a
-   branch, a tag per release or a manual run. `since` wins when given. On the first deploy
-   to an environment there is nothing to compare from: the text alone is read when `text`
-   is given, otherwise the head commit, and the summary says so. (A witness from before
-   the record falls back to the previous successful run of this workflow on this branch,
-   which `permissions: actions: read` lets it read.)
+   branch, a tag per release or a manual run. `since` wins when given. Before the project
+   holds a record for an environment — the first run after upgrading, or a witness from
+   before the record — the step takes the previous successful run of this workflow on this
+   branch, which `permissions: actions: read` lets it read, so a team that deploys on pushes
+   keeps its range on that run. With nothing to compare from at all, the text alone is read
+   when `text` is given, otherwise the head commit, and the summary says so.
 3. For each cited card: one comment; the deploy record the card keeps per environment
    (what the list's mark and its filter read, and what an agent reads instead of the
    comment); and, when `status` is set and the card is in Blocked, one status change on
