@@ -80,11 +80,12 @@ describe('the entry GitHub runs', () => {
       body: JSON.stringify({ area: 'alerts', title: 'End to end', status: 'blocked', statusReason: 'PR #1', actor: { kind: 'human', name: 'Mia' } }),
     }).then((res) => res.json() as Promise<any>);
     const id: string = made.card.id;
-    const r = await runEntry({ link: edit!, environment: 'staging', status: 'verify' }, `Ship it (${id})`);
+    const environment = `e-${crypto.randomUUID().slice(0, 8)}`;
+    const r = await runEntry({ link: edit!, environment, status: 'verify' }, `Ship it (${id})`);
     expect(r.code).toBe(0);
     expect(r.out).not.toContain('::warning::');
     expect(r.summary).toContain(`| ${id} | End to end | blocked | verify |`);
-    expect(r.summary).toContain('no previous successful run');
+    expect(r.summary).toContain(`the first deploy to ${environment}`);
     expect(r.summary).not.toContain(edit!.split('/r/')[1]!);
     expect(r.out.replace(`::add-mask::${edit}`, '')).not.toContain(edit!.split('/r/')[1]!);
   });

@@ -50,6 +50,11 @@ describe('what the card is told', () => {
   test('without an address', () => {
     expect(commentBody(run, { environment: 'production' })).toEndWith('[run 4183](https://github.com/acme/shop/actions/runs/99001)');
   });
+  test("the release's name between the commit and the run, when the team has one", () => {
+    expect(commentBody(run, { environment: 'production', release: 'v2026.11.02.2' })).toContain(
+      '[`3f9c2a1`](https://github.com/acme/shop/commit/3f9c2a1deadbeef0000000000000000000000000) · v2026.11.02.2 · [run 4183]',
+    );
+  });
 });
 
 describe('which cards a status moves', () => {

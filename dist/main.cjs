@@ -85,8 +85,12 @@ function subject(message) {
 function commentBody(run, inputs) {
   const commitUrl = `${run.serverUrl}/${run.repository}/commit/${run.sha}`;
   const runUrl = `${run.serverUrl}/${run.repository}/actions/runs/${run.runId}`;
+  const release = inputs.release?.trim() ? ` · ${inputs.release.trim()}` : "";
   const where = inputs.url ? ` — ${inputs.url}` : "";
-  return `Deployed to **${inputs.environment}** at [\`${run.sha.slice(0, 7)}\`](${commitUrl}) · [run ${run.runNumber}](${runUrl})${where}`;
+  return `Deployed to **${inputs.environment}** at [\`${run.sha.slice(0, 7)}\`](${commitUrl})${release} · [run ${run.runNumber}](${runUrl})${where}`;
+}
+function runUrl(run) {
+  return `${run.serverUrl}/${run.repository}/actions/runs/${run.runId}`;
 }
 function actor(run) {
   return { kind: "agent", name: `${run.repository} deploy`, via: "GitHub Actions" };
@@ -169,6 +173,26 @@ class Witness {
       throw e;
     }
   }
+  async previousDeploy(repository, environment) {
+    try {
+      const data = await this.call("GET", "/deploys.json");
+      return data.deploys.find((d) => d.repository === repository && d.environment === environment) ?? null;
+    } catch (e) {
+      if (e instanceof WitnessError && e.status === 404)
+        return "unsupported";
+      throw e;
+    }
+  }
+  async recordProjectDeploy(deploy) {
+    try {
+      await this.call("POST", "/deploys", { ...deploy, actor: this.actor });
+      return true;
+    } catch (e) {
+      if (e instanceof WitnessError && e.status === 404)
+        return false;
+      throw e;
+    }
+  }
   async setStatus(id, version, status) {
     await this.call("PATCH", `/cards/${id}`, { status, actor: this.actor }, { "If-Match": String(version) });
   }
@@ -204,9 +228,9 @@ function makeWitness(inputs, run, fetchImpl) {
 async function step(inputs, run, clients) {
   const warnings = [];
   const prefixes = await clients.witness.prefixes();
-  const { commits, range: commitRange } = await deployedCommits(inputs, clients.github, warnings);
-  const ids = idsOf(commits, inputs.text, prefixes);
-  const range = inputs.text?.trim() ? `${commitRange}, and the text given` : commitRange;
+  const found = await deployedCommits(inputs, run, clients, warnings);
+  const ids = idsOf(found.commits, inputs.text, prefixes);
+  const range = inputs.text?.trim() && !found.textOnly ? `${found.range}, and the text given` : found.range;
   if (inputs.status === "done") {
     warnings.push("`status: done` was ignored — done needs the name of a person who vouches, and a pipeline has none to give. The cards were commented on.");
   }
@@ -232,8 +256,9 @@ async function step(inputs, run, clients) {
       const recorded = await clients.witness.recordDeploy(id, {
         environment: inputs.environment,
         sha: run.sha,
+        release: inputs.release,
         url: inputs.url,
-        run: `${run.serverUrl}/${run.repository}/actions/runs/${run.runId}`
+        run: runUrl(run)
       });
       if (!recorded && !noRecord) {
         noRecord = true;
@@ -253,35 +278,67 @@ async function step(inputs, run, clients) {
     }
     reached.push(row);
   }
+  try {
+    await clients.witness.recordProjectDeploy({
+      repository: run.repository,
+      environment: inputs.environment,
+      sha: run.sha,
+      release: inputs.release,
+      url: inputs.url,
+      run: runUrl(run)
+    });
+  } catch (e) {
+    warnings.push(`The deploy was not recorded on the project (${describe(e)}); the next run will compare from the one before.`);
+  }
   return { range, reached, unknown, warnings };
 }
-async function deployedCommits(inputs, github, warnings) {
+async function deployedCommits(inputs, run, clients, warnings) {
+  const { github, witness } = clients;
   const since = inputs.since?.trim();
   if (since) {
     const commits = await github.commitsSince(since);
     if (commits)
       return { commits, range: `${commits.length} commit(s) since \`${since.slice(0, 7)}\` (from \`since\`)` };
-    warnings.push(`\`since: ${since.slice(0, 7)}\` is not a commit GitHub can compare from; the head commit alone was read.`);
-    return headOnly(github, "the head commit only");
+    warnings.push(`\`since: ${since.slice(0, 7)}\` is not a commit GitHub can compare from; ${nothingToCompareFrom(inputs)}.`);
+    return fallback(inputs, github, "since could not be compared from");
   }
+  const previous = await witness.previousDeploy(run.repository, inputs.environment);
+  if (previous === "unsupported")
+    return fromRuns(inputs, github, warnings);
+  if (previous === null)
+    return fallback(inputs, github, `the first deploy to ${inputs.environment} recorded here`);
+  const commits = await github.commitsSince(previous.sha);
+  if (commits === null) {
+    warnings.push(`The previous deploy's commit \`${previous.sha.slice(0, 7)}\` is no longer in this repository; ${nothingToCompareFrom(inputs)}.`);
+    return fallback(inputs, github, "the previous deploy is gone from the repository");
+  }
+  const named = previous.release ? ` (${previous.release})` : "";
+  return { commits, range: `${commits.length} commit(s) since the previous deploy to ${inputs.environment}, \`${previous.sha.slice(0, 7)}\`${named}` };
+}
+async function fromRuns(inputs, github, warnings) {
   const previous = await github.previousDeploySha();
   if (previous === "forbidden") {
-    warnings.push("The token may not read workflow runs (`permissions: actions: read`), so the previous deploy is unknown; the head commit alone was read. Pass `since` or grant the permission.");
-    return headOnly(github, "the head commit only — previous deploy unknown");
+    warnings.push(`The token may not read workflow runs (\`permissions: actions: read\`), so the previous deploy is unknown; ${nothingToCompareFrom(inputs)}. Pass \`since\`, grant the permission, or update witness, which then keeps the record itself.`);
+    return fallback(inputs, github, "previous deploy unknown");
   }
   if (previous === null) {
-    return headOnly(github, "the head commit only — no previous successful run of this workflow on this branch");
+    return fallback(inputs, github, "no previous successful run of this workflow on this branch");
   }
   const commits = await github.commitsSince(previous.sha);
   if (commits === null) {
-    warnings.push(`The previous deploy's commit \`${previous.sha.slice(0, 7)}\` is no longer in this branch's history; the head commit alone was read.`);
-    return headOnly(github, "the head commit only");
+    warnings.push(`The previous deploy's commit \`${previous.sha.slice(0, 7)}\` is no longer in this branch's history; ${nothingToCompareFrom(inputs)}.`);
+    return fallback(inputs, github, "the previous deploy is gone from the branch");
   }
   return { commits, range: `${commits.length} commit(s) since the previous deploy, \`${previous.sha.slice(0, 7)}\` (run ${previous.runNumber})` };
 }
-async function headOnly(github, why) {
+function nothingToCompareFrom(inputs) {
+  return inputs.text?.trim() ? "the text alone was read" : "the head commit alone was read";
+}
+async function fallback(inputs, github, why) {
+  if (inputs.text?.trim())
+    return { commits: [], range: `the text given only — ${why}`, textOnly: true };
   const head = await github.headCommit();
-  return { commits: [head], range: `${why}: ${subject(head.message)}` };
+  return { commits: [head], range: `the head commit only — ${why}: ${subject(head.message)}` };
 }
 function describe(e) {
   if (e instanceof WitnessError) {
@@ -338,10 +395,18 @@ async function main() {
   const token = input("token") ?? "";
   if (token)
     mask(token);
-  const inputs = { link, environment, url: input("url"), status: input("status"), since: input("since"), text: input("text") };
+  const inputs = {
+    link,
+    environment,
+    url: input("url"),
+    status: input("status"),
+    since: input("since"),
+    text: input("text"),
+    release: input("release")
+  };
   const run = {
     repository: env("GITHUB_REPOSITORY"),
-    sha: env("GITHUB_SHA"),
+    sha: input("sha") ?? env("GITHUB_SHA"),
     runId: env("GITHUB_RUN_ID"),
     runNumber: env("GITHUB_RUN_NUMBER"),
     serverUrl: env("GITHUB_SERVER_URL") || "https://github.com"

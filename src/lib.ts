@@ -12,6 +12,8 @@ export type Inputs = {
   since?: string;
   /** Text to scan beside the commits — a release's notes. */
   text?: string;
+  /** The name the team calls this deploy by — a release tag, a build number. */
+  release?: string;
 };
 
 /** What the run knows about itself — GitHub's own context, read from the environment. */
@@ -27,6 +29,9 @@ export type Commit = { sha: string; message: string };
 
 /** The card as the step reads it: enough to comment, to decide a move, and to send If-Match. */
 export type Card = { id: string; title: string; status: string; version: number };
+
+/** The project's own record of a deploy: the latest commit that reached an environment from a repository. */
+export type ProjectDeploy = { repository: string; environment: string; sha: string; release: string; url: string; run: string; at: string };
 
 /**
  * Card ids are `<area prefix>-<number>`, and only the project's own prefixes count: a
@@ -67,14 +72,21 @@ export function subject(message: string): string {
 
 /**
  * What the card is told. The environment in bold because it is the one word a reader
- * scans for; the commit and the run as links; the environment's address last, when it has
- * one, so a person verifying can open it from the card.
+ * scans for; the commit and the run as links, the release's name between them when the
+ * team has one; the environment's address last, when it has one, so a person verifying
+ * can open it from the card.
  */
-export function commentBody(run: Run, inputs: Pick<Inputs, 'environment' | 'url'>): string {
+export function commentBody(run: Run, inputs: Pick<Inputs, 'environment' | 'url' | 'release'>): string {
   const commitUrl = `${run.serverUrl}/${run.repository}/commit/${run.sha}`;
   const runUrl = `${run.serverUrl}/${run.repository}/actions/runs/${run.runId}`;
+  const release = inputs.release?.trim() ? ` · ${inputs.release.trim()}` : '';
   const where = inputs.url ? ` — ${inputs.url}` : '';
-  return `Deployed to **${inputs.environment}** at [\`${run.sha.slice(0, 7)}\`](${commitUrl}) · [run ${run.runNumber}](${runUrl})${where}`;
+  return `Deployed to **${inputs.environment}** at [\`${run.sha.slice(0, 7)}\`](${commitUrl})${release} · [run ${run.runNumber}](${runUrl})${where}`;
+}
+
+/** The address of this run, as the record and the comment name it. */
+export function runUrl(run: Run): string {
+  return `${run.serverUrl}/${run.repository}/actions/runs/${run.runId}`;
 }
 
 /** The actor on every write: the deploy's own name. A pipeline claims on nobody's behalf. */
