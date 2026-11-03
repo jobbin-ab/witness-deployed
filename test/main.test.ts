@@ -17,6 +17,8 @@ const server = Bun.serve({
   fetch(req) {
     const url = new URL(req.url);
     if (url.pathname.includes('/actions/workflows/')) return Response.json({ workflow_runs: [] });
+    if (url.pathname.endsWith('/pulls')) return Response.json([]);
+    if (url.pathname.endsWith('/graphql')) return Response.json({ data: { repository: {} } });
     if (url.pathname.includes('/commits/')) return Response.json({ sha: 'abc', commit: { message: headMessage } });
     return new Response('not stood in', { status: 500 });
   },

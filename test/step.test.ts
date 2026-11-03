@@ -2,18 +2,20 @@
  * The whole step against a real witness project — a local worker, provisioned with the
  * admin CLI, its links in WITNESS_EDIT_LINK and WITNESS_VIEW_LINK — with GitHub's API stood
  * in for. GitHub is the one boundary this suite cannot cross: a real run exists only
- * inside Actions, so the two answers the step reads (the previous successful run, the
- * compare) are served by a stand-in that returns the documented shapes. Everything on the
+ * inside Actions, so the answers the step reads (the previous successful run, the compare,
+ * the pull requests a commit came from) are served by a stand-in that returns the
+ * documented shapes. Everything on the
  * witness side is the real server: the ids it assigns, the writes it accepts, the ones it
  * refuses.
  *
- * Skipped, loudly, when no link is set.
+ * Skipped, loudly, when no link is set — all but the reading of pull requests, which needs
+ * no project.
  */
 import { describe, expect, test } from 'bun:test';
 import { GitHub } from '../src/github.ts';
 import type { Fetch } from '../src/witness.ts';
 import { actor, type Run } from '../src/lib.ts';
-import { makeWitness, step } from '../src/step.ts';
+import { makeWitness, shippedByPullRequests, step } from '../src/step.ts';
 
 const edit = process.env.WITNESS_EDIT_LINK;
 const view = process.env.WITNESS_VIEW_LINK;
@@ -31,22 +33,64 @@ const previousSha = '1234567aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 /**
  * GitHub's answers, in the shapes the API documents. `compared` is every base the step
- * asked to compare from, which is how a test sees where the range began.
+ * asked to compare from, which is how a test sees where the range began; `comparePages` the
+ * pages it asked for; `pullQueries` the commits each GraphQL query asked about.
  */
-function githubStandIn(messages: string[], opts: { runs?: 'forbidden' | 'none'; head?: string } = {}): GitHub & { compared: string[] } {
+/** Per commit sha, the pull requests GraphQL links it to; `base` defaults to this repository. */
+type PullAnswers = Record<string, { number: number; body: string | null; base?: string }[]>;
+/** How the pull request query fails, after `after` queries answered (0 when not given). */
+type PullFailure = { after?: number; status?: number; headers?: Record<string, string>; errorType?: string };
+
+function githubStandIn(
+  messages: string[],
+  opts: {
+    runs?: 'forbidden' | 'none';
+    head?: string;
+    pulls?: PullAnswers;
+    pullsFail?: PullFailure;
+    /** How the REST list of pull requests answers the step's one permission check. */
+    pullsCheck?: { status: number; headers?: Record<string, string> };
+  } = {},
+): GitHub & { compared: string[]; comparePages: number[]; pullQueries: string[][]; pullChecks: number[] } {
   const compared: string[] = [];
+  const comparePages: number[] = [];
+  const pullQueries: string[][] = [];
+  const pullChecks: number[] = [];
   const sha = opts.head ?? run.sha;
-  const fetchImpl: Fetch = async (input) => {
+  const fetchImpl: Fetch = async (input, init) => {
     const url = String(input);
     if (url.includes('/actions/workflows/')) {
       if (opts.runs === 'forbidden') return new Response('{"message":"Resource not accessible by integration"}', { status: 403 });
       const runs = opts.runs === 'none' ? [] : [{ head_sha: sha, run_number: 4183 }, { head_sha: previousSha, run_number: 4182 }];
       return Response.json({ workflow_runs: runs });
     }
-    const compare = /\/compare\/(.+?)\.\.\./.exec(url);
+    if (/\/repos\/[^/]+\/[^/]+\/pulls\?/.test(url)) {
+      pullChecks.push(pullQueries.length);
+      const check = opts.pullsCheck;
+      if (check) return Response.json({ message: 'refused' }, { status: check.status, headers: check.headers });
+      return Response.json([]);
+    }
+    if (url.endsWith('/graphql')) {
+      const { variables } = JSON.parse(String(init?.body)) as { variables: Record<string, string> };
+      const asked = Object.entries(variables).filter(([k]) => /^c\d+$/.test(k));
+      pullQueries.push(asked.map(([, v]) => v));
+      const fail = opts.pullsFail;
+      if (fail && pullQueries.length > (fail.after ?? 0)) {
+        if (fail.errorType) return Response.json({ data: null, errors: [{ type: fail.errorType, message: 'refused' }] });
+        return Response.json({ message: 'refused' }, { status: fail.status ?? 500, headers: fail.headers });
+      }
+      const nodes = (v: string) =>
+        (opts.pulls?.[v] ?? []).map(({ base, ...p }) => ({ ...p, baseRepository: { nameWithOwner: base ?? run.repository } }));
+      const repository = Object.fromEntries(asked.map(([k, v]) => [k, { associatedPullRequests: { nodes: nodes(v) } }]));
+      return Response.json({ data: { repository } });
+    }
+    const compare = /\/compare\/(.+?)\.\.\..*[?&]page=(\d+)/.exec(url);
     if (compare) {
-      compared.push(compare[1]!);
-      return Response.json({ commits: messages.map((message, i) => ({ sha: `c${i}`, commit: { message } })) });
+      const page = Number(compare[2]);
+      if (page === 1) compared.push(compare[1]!);
+      comparePages.push(page);
+      const all = messages.map((message, i) => ({ sha: `c${i}`, commit: { message } }));
+      return Response.json({ total_commits: all.length, commits: all.slice((page - 1) * 100, page * 100) });
     }
     if (url.includes('/commits/')) {
       return Response.json({ sha, commit: { message: messages[messages.length - 1] ?? '' } });
@@ -57,7 +101,7 @@ function githubStandIn(messages: string[], opts: { runs?: 'forbidden' | 'none'; 
     { ...run, sha, apiUrl: 'https://api.github.test', workflowRef: 'acme/shop/.github/workflows/deploy.yml@refs/heads/main', refName: 'main', token: 't' },
     fetchImpl,
   );
-  return Object.assign(github, { compared });
+  return Object.assign(github, { compared, comparePages, pullQueries, pullChecks });
 }
 
 /** An environment no earlier test has deployed to, so the project's record for it starts empty. */
@@ -113,6 +157,126 @@ async function seed(link: string) {
   const working = (await post(link, '/cards', { area: 'vx', title: 'Retry on 502', actor: writer })).card;
   return { blocked, done, working };
 }
+
+describe('the cards a pull request ships', () => {
+  const commits = [
+    { sha: 'c0', message: 'Fix discount total (#212)' },
+    { sha: 'c1', message: 'Tidy the footer (#212)' },
+    { sha: 'c2', message: 'Retry on 502 (#213)' },
+  ];
+  const pr212 = { number: 212, body: 'Builds on AL-02.\n\nShips AL-04, VX-13.\n\nAL-05 is left for its own card.' };
+  const pr213 = { number: 213, body: '- ships: AL-07' };
+  const many = (n: number) => Array.from({ length: n }, (_, i) => ({ sha: `c${i}`, message: `Commit ${i}` }));
+
+  test('each pull request read once, only its Ships lines, joined across pull requests', async () => {
+    const warnings: string[] = [];
+    const github = githubStandIn([], { pulls: { c0: [pr212], c1: [pr212], c2: [pr213, { number: 214, body: null }] } });
+    const out = await shippedByPullRequests(commits, github, ['AL', 'VX'], warnings);
+    expect(out).toEqual({ ids: ['AL-04', 'VX-13', 'AL-07'], pulls: 3 });
+    expect(warnings).toEqual([]);
+  });
+
+  test('the token is asked once, before the first query, whether it may read pull requests', async () => {
+    const github = githubStandIn([], { pulls: { c0: [pr212] } });
+    await shippedByPullRequests(many(250), github, ['AL'], []);
+    expect(github.pullChecks).toEqual([0]);
+  });
+
+  for (const status of [403, 404]) {
+    test(`a token the REST check refuses (${status}) is warned about, though GraphQL would answer an empty list`, async () => {
+      const warnings: string[] = [];
+      const github = githubStandIn([], { pullsCheck: { status } });
+      const out = await shippedByPullRequests(commits, github, ['AL'], warnings);
+      expect(out).toEqual({ ids: [], pulls: 0 });
+      expect(github.pullQueries).toEqual([]);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('permissions: pull-requests: read');
+    });
+  }
+
+  test('a spent rate limit at the REST check is said as one', async () => {
+    const warnings: string[] = [];
+    const github = githubStandIn([], { pullsCheck: { status: 403, headers: { 'x-ratelimit-remaining': '0' } } });
+    await shippedByPullRequests(commits, github, ['AL'], warnings);
+    expect(github.pullQueries).toEqual([]);
+    expect(warnings[0]).toContain('rate limit');
+    expect(warnings[0]).not.toContain('pull-requests: read');
+  });
+
+  test('a pull request into a fork is not this repository\'s, even under the same number', async () => {
+    const github = githubStandIn([], {
+      pulls: {
+        c0: [{ number: 212, body: 'Ships AL-99', base: 'someone/shop' }],
+        c1: [{ number: 212, body: 'Ships AL-04', base: 'ACME/Shop' }],
+        c2: [{ number: 7, body: 'Ships AL-98', base: 'acme/shop-fork' }],
+      },
+    });
+    const out = await shippedByPullRequests(commits, github, ['AL'], []);
+    expect(out).toEqual({ ids: ['AL-04'], pulls: 1 });
+  });
+
+  test('one query per hundred commits, however many commits share a pull request', async () => {
+    const github = githubStandIn([], { pulls: { c0: [pr212], c150: [pr212], c249: [pr213] } });
+    const out = await shippedByPullRequests(many(250), github, ['AL', 'VX'], []);
+    expect(github.pullQueries.map((q) => q.length)).toEqual([100, 100, 50]);
+    expect(github.pullQueries.flat()).toEqual(many(250).map((c) => c.sha));
+    expect(out).toEqual({ ids: ['AL-04', 'VX-13', 'AL-07'], pulls: 2 });
+  });
+
+  const refusals: [string, PullFailure][] = [
+    ['403', { status: 403 }],
+    ['404', { status: 404 }],
+    ['a GraphQL FORBIDDEN', { errorType: 'FORBIDDEN' }],
+    ['a GraphQL NOT_FOUND', { errorType: 'NOT_FOUND' }],
+  ];
+  for (const [name, pullsFail] of refusals) {
+    test(`a token that may not read pull requests (${name}): one warning naming the permission, asked once`, async () => {
+      const warnings: string[] = [];
+      const github = githubStandIn([], { pullsFail });
+      const out = await shippedByPullRequests(many(150), github, ['AL'], warnings);
+      expect(out).toEqual({ ids: [], pulls: 0 });
+      expect(github.pullQueries).toHaveLength(1);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('permissions: pull-requests: read');
+    });
+  }
+
+  const limits: [string, PullFailure][] = [
+    ['403 with no requests left', { status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1793750400' } }],
+    ['403 with retry-after', { status: 403, headers: { 'retry-after': '60' } }],
+    ['429', { status: 429 }],
+    ['a GraphQL RATE_LIMITED', { errorType: 'RATE_LIMITED' }],
+  ];
+  for (const [name, limit] of limits) {
+    test(`a spent rate limit (${name}) is said as one, and keeps the pull requests read before it`, async () => {
+      const warnings: string[] = [];
+      const github = githubStandIn([], { pulls: { c0: [pr212], c120: [pr213] }, pullsFail: { ...limit, after: 1 } });
+      const out = await shippedByPullRequests(many(150), github, ['AL', 'VX'], warnings);
+      expect(out).toEqual({ ids: ['AL-04', 'VX-13'], pulls: 1 });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('rate limit');
+      expect(warnings[0]).not.toContain('pull-requests: read');
+    });
+  }
+
+  test('a GitHub that fails to answer costs the pull requests not yet read, never the step', async () => {
+    const warnings: string[] = [];
+    const github = githubStandIn([], { pulls: { c0: [pr212] }, pullsFail: { status: 500, after: 1 } });
+    const out = await shippedByPullRequests(many(150), github, ['AL', 'VX'], warnings);
+    expect(out).toEqual({ ids: ['AL-04', 'VX-13'], pulls: 1 });
+    expect(warnings[0]).toContain('GitHub answered 500');
+  });
+});
+
+describe('the commits a range holds', () => {
+  test('every page of the compare is followed, so a range past one page loses no commit', async () => {
+    const messages = Array.from({ length: 260 }, (_, i) => `Commit ${i}`);
+    const github = githubStandIn(messages);
+    const commits = await github.commitsSince(previousSha);
+    expect(commits?.map((c) => c.message)).toEqual(messages);
+    expect(github.comparePages).toEqual([1, 2, 3]);
+  });
+});
 
 describe('the step against a real project', () => {
   live('comments on every cited card, moves only the blocked one, and reports the rest', async () => {
@@ -267,6 +431,31 @@ describe('the step against a real project', () => {
     const forbidden = await step(inputs, run, { witness, github: githubStandIn([`Fix (${blocked.id})`], { runs: 'forbidden' }) });
     expect(forbidden.warnings[0]).toContain('permissions: actions: read');
     expect(forbidden.reached.map((r) => r.id)).toEqual([blocked.id]);
+  });
+
+  live("the cards a pull request's Ships line names join the commits' own, and the range says so", async () => {
+    const link = edit!;
+    const { blocked, done, working } = await seed(link);
+    const environment = fresh();
+    await post(link, '/deploys', { repository: run.repository, environment, sha: previousSha, actor: actor(run) });
+    const inputs = { link, environment };
+    // Squash commits carry the pull request's title; the description names the cards.
+    const github = githubStandIn([`Fix discount total (${done.id}) (#212)`, 'Retry on 502 (#213)'], {
+      pulls: {
+        c0: [{ number: 212, body: `Ships ${blocked.id}, ${done.id}.\n\nBuilds on ${working.id}.` }],
+        c1: [{ number: 213, body: 'Ships AL-99' }],
+      },
+    });
+    const outcome = await step(inputs, run, { witness: makeWitness(inputs, run), github });
+    expect(outcome.range).toContain(`2 commit(s) since the previous deploy to ${environment}, \`1234567\`, and the Ships lines of 2 pull request(s)`);
+    expect(outcome.reached.map((r) => r.id)).toEqual([done.id, blocked.id]);
+    expect(outcome.unknown).toEqual(['AL-99']);
+    expect(outcome.warnings).toEqual([]);
+    expect((await read(link, working.id)).comments).toHaveLength(0);
+
+    const forbidden = await step(inputs, run, { witness: makeWitness(inputs, run), github: githubStandIn([`Fix (${done.id})`], { pullsFail: { status: 404 } }) });
+    expect(forbidden.reached.map((r) => r.id)).toEqual([done.id]);
+    expect(forbidden.warnings[0]).toContain('permissions: pull-requests: read');
   });
 
   live('a project the link cannot reach is one error, before any write', async () => {

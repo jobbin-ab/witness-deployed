@@ -3,8 +3,8 @@
  * project and a stand-in GitHub. It never throws for a card: what a card refuses is a line
  * in the summary, and the next card is still written.
  */
-import { actor as actorFor, commentBody, idsOf, moveTo, runUrl, subject, type Commit, type Inputs, type Outcome, type Reached, type Run } from './lib.ts';
-import type { GitHub } from './github.ts';
+import { actor as actorFor, commentBody, declaredIds, idsOf, moveTo, runUrl, subject, type Commit, type Inputs, type Outcome, type Reached, type Run } from './lib.ts';
+import { GitHubRateLimited, PULLS_PER_QUERY, type GitHub } from './github.ts';
 import { Witness, WitnessError, type Fetch } from './witness.ts';
 
 export type Clients = { witness: Witness; github: GitHub };
@@ -18,8 +18,11 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
   const prefixes = await clients.witness.prefixes();
 
   const found = await deployedCommits(inputs, run, clients, warnings);
-  const ids = idsOf(found.commits, inputs.text, prefixes);
-  const range = inputs.text?.trim() && !found.textOnly ? `${found.range}, and the text given` : found.range;
+  const declared = await shippedByPullRequests(found.commits, clients.github, prefixes, warnings);
+  const ids = [...new Set([...idsOf(found.commits, inputs.text, prefixes), ...declared.ids])];
+  let range = found.range;
+  if (declared.pulls > 0) range += `, and the Ships lines of ${declared.pulls} pull request(s)`;
+  if (inputs.text?.trim() && !found.textOnly) range += ', and the text given';
 
   if (inputs.status === 'done') {
     warnings.push('`status: done` was ignored — done needs the name of a person who vouches, and a pipeline has none to give. The cards were commented on.');
@@ -86,6 +89,57 @@ export async function step(inputs: Inputs, run: Run, clients: Clients): Promise<
     warnings.push(`The deploy was not recorded on the project (${describe(e)}); the next run will compare from the one before.`);
   }
   return { range, reached, unknown, warnings };
+}
+
+/**
+ * The ids the deployed commits' pull requests declare they ship. A squash or merge commit
+ * carries the pull request's title by default, not its description, so a team that names
+ * the cards in the description is read here, each pull request once. Only its `Ships` lines
+ * count. A repository set to put the description in the commit message instead has every
+ * id in it counted through the commit — nothing here can tell, so the README says to keep
+ * that setting on the title. The commits are asked about in one GraphQL query per
+ * {@link PULLS_PER_QUERY}, after one REST call that asks whether the token may read pull
+ * requests at all. A token that may not read pull requests, a spent rate limit, or a
+ * GitHub that fails to answer costs a warning and the pull requests not yet read — never
+ * the ones already read, nor the commits' own ids.
+ */
+export async function shippedByPullRequests(
+  commits: readonly Commit[],
+  github: GitHub,
+  prefixes: readonly string[],
+  warnings: string[],
+): Promise<{ ids: string[]; pulls: number }> {
+  const bodies = new Map<string, string>();
+  const done = () => ({ ids: declaredIds([...bodies.values()], prefixes), pulls: bodies.size });
+  const kept = () => (bodies.size > 0 ? ` (the ${bodies.size} pull request(s) read before it count)` : '');
+  const refused = () =>
+    warnings.push(`The token may not read pull requests (\`permissions: pull-requests: read\`), so their Ships lines were not read${kept()}; the commits were.`);
+  if (commits.length === 0) return done();
+  try {
+    if (!(await github.mayReadPullRequests())) {
+      refused();
+      return done();
+    }
+    for (let i = 0; i < commits.length; i += PULLS_PER_QUERY) {
+      const pulls = await github.pullRequestsOf(commits.slice(i, i + PULLS_PER_QUERY).map((c) => c.sha));
+      if (pulls === 'forbidden') {
+        refused();
+        return done();
+      }
+      for (const p of pulls) {
+        const key = `${p.repository}#${p.number}`;
+        if (!bodies.has(key)) bodies.set(key, p.body);
+      }
+    }
+  } catch (e) {
+    const why = e instanceof GitHubRateLimited ? e.message : `the pull requests could not be read (${describe(e)})`;
+    warnings.push(`${capitalise(why)}, so the Ships lines of the pull requests not yet read were skipped${kept()}; the commits were read.`);
+  }
+  return done();
+}
+
+function capitalise(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 type Found = { commits: Commit[]; range: string; textOnly?: boolean };
